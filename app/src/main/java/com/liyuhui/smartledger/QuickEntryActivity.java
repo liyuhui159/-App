@@ -2,10 +2,13 @@ package com.liyuhui.smartledger;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.InputType;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -17,7 +20,6 @@ import android.widget.Toast;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.text.InputType;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -28,6 +30,7 @@ import java.util.regex.Pattern;
 public class QuickEntryActivity extends Activity {
     private static final int PRIMARY = Color.rgb(91, 95, 239);
     private static final int PRIMARY_DARK = Color.rgb(34, 36, 77);
+    private static final String[] TYPES = {"支出", "收入"};
     private static final String[] CATEGORIES = {"餐饮", "交通", "购物", "住房", "学习", "医疗", "娱乐", "通讯", "人情", "工资", "退款", "其他"};
     private static final String[] ACCOUNTS = {"微信", "支付宝", "银行卡", "信用卡", "现金", "其他"};
 
@@ -38,6 +41,7 @@ public class QuickEntryActivity extends Activity {
     private EditText noteInput;
     private EditText dateInput;
     private TextView rawPreview;
+    private String rawText = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -65,7 +69,7 @@ public class QuickEntryActivity extends Activity {
 
         TextView title = text("自动识别到账单", 22, PRIMARY_DARK, true);
         root.addView(title);
-        TextView sub = text("已压缩重复信息，请确认分类和金额后保存。", 13, Color.rgb(100, 105, 125), false);
+        TextView sub = text("已压缩重复信息，可点“自动识别商品/分类”重新分析。", 13, Color.rgb(100, 105, 125), false);
         sub.setPadding(0, dp(4), 0, dp(12));
         root.addView(sub);
 
@@ -74,9 +78,9 @@ public class QuickEntryActivity extends Activity {
         rawPreview.setBackground(round(Color.rgb(246, 248, 252), 12));
         root.addView(rawPreview, new LinearLayout.LayoutParams(-1, -2));
 
-        typeSpinner = spinner(new String[]{"支出", "收入"});
-        categorySpinner = spinner(CATEGORIES);
-        accountSpinner = spinner(ACCOUNTS);
+        typeSpinner = spinner(new String[]{"💸 支出", "💰 收入"});
+        categorySpinner = spinner(categoryItems());
+        accountSpinner = spinner(accountItems());
         amountInput = input("金额", true);
         noteInput = input("备注", false);
         dateInput = input("日期 yyyy-MM-dd", false);
@@ -87,6 +91,10 @@ public class QuickEntryActivity extends Activity {
         root.addView(label("金额")); root.addView(amountInput);
         root.addView(label("备注")); root.addView(noteInput);
         root.addView(label("日期")); root.addView(dateInput);
+
+        Button auto = button("🔍 自动识别商品/分类", Color.rgb(245, 247, 255), PRIMARY);
+        auto.setOnClickListener(v -> autoRecognizeAgain());
+        root.addView(auto, new LinearLayout.LayoutParams(-1, dp(46)));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -107,44 +115,60 @@ public class QuickEntryActivity extends Activity {
     }
 
     private void fillFromIntent() {
-        String raw = getIntent().getStringExtra("raw_text");
+        rawText = getIntent().getStringExtra("raw_text");
         String forcedType = getIntent().getStringExtra("forced_type");
         String forcedAccount = getIntent().getStringExtra("forced_account");
         String forcedCategory = getIntent().getStringExtra("forced_category");
         String forcedNote = getIntent().getStringExtra("forced_note");
         double forcedAmount = getIntent().getDoubleExtra("forced_amount", 0D);
-        if (raw == null) raw = "";
+        if (rawText == null) rawText = "";
 
-        MainActivity.Entry parsed = MainActivity.SmartParser.parseOne(raw);
+        MainActivity.Entry parsed = MainActivity.SmartParser.parseOne(rawText);
         if (parsed == null) parsed = new MainActivity.Entry();
         if (forcedType != null && forcedType.length() > 0) parsed.type = forcedType;
         if (forcedAccount != null && forcedAccount.length() > 0) parsed.account = forcedAccount;
         if (forcedCategory != null && forcedCategory.length() > 0) parsed.category = forcedCategory;
         if (forcedAmount > 0) parsed.amount = forcedAmount;
 
-        String smartCategory = MainActivity.SmartParser.inferCategory(raw, parsed.type);
+        String smartCategory = MainActivity.SmartParser.inferCategory(rawText, parsed.type);
         if (forcedCategory == null || forcedCategory.length() == 0) parsed.category = smartCategory;
-        String note = forcedNote != null && forcedNote.trim().length() > 0 ? forcedNote.trim() : makeBetterNote(raw, parsed.note);
+        String note = forcedNote != null && forcedNote.trim().length() > 0 ? forcedNote.trim() : makeBetterNote(rawText, parsed.note);
 
-        rawPreview.setText(buildSummary(raw, parsed, note));
-        typeSpinner.setSelection(indexOf(new String[]{"支出", "收入"}, parsed.type));
-        categorySpinner.setSelection(indexOf(CATEGORIES, parsed.category));
-        accountSpinner.setSelection(indexOf(ACCOUNTS, parsed.account));
+        rawPreview.setText(buildSummary(rawText, parsed, note));
+        setTypeSelection(parsed.type);
+        setCategorySelection(parsed.category);
+        setAccountSelection(parsed.account);
         if (parsed.amount > 0) amountInput.setText(String.format(Locale.CHINA, "%.2f", parsed.amount));
         noteInput.setText(note);
         dateInput.setText(new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date(parsed.time > 0 ? parsed.time : System.currentTimeMillis())));
+    }
+
+    private void autoRecognizeAgain() {
+        String source = (rawText == null ? "" : rawText) + " " + noteInput.getText().toString();
+        String type = cleanSpinner(typeSpinner.getSelectedItem().toString());
+        String category = MainActivity.SmartParser.inferCategory(source, type);
+        String merchant = extractMerchant(source);
+        if (merchant.length() > 0) noteInput.setText(merchant);
+        setCategorySelection(category);
+        MainActivity.Entry e = MainActivity.SmartParser.parseOne(source);
+        if (e != null && e.amount > 0 && amountInput.getText().toString().trim().isEmpty()) {
+            amountInput.setText(String.format(Locale.CHINA, "%.2f", e.amount));
+        }
+        rawPreview.setText(buildSummary(source, e == null ? new MainActivity.Entry() : e, noteInput.getText().toString()));
+        Toast.makeText(this, "已重新识别商品和分类", Toast.LENGTH_SHORT).show();
     }
 
     private String buildSummary(String raw, MainActivity.Entry parsed, String note) {
         if (raw == null) raw = "";
         String merchant = extractMerchant(raw);
         String orderNo = extractAfter(raw, "订单号", 42);
+        if (orderNo.length() == 0) orderNo = extractAfter(raw, "商家订单号", 42);
         String time = extractDateTime(raw);
         StringBuilder sb = new StringBuilder();
         sb.append("识别摘要\n");
-        sb.append("金额：¥").append(String.format(Locale.CHINA, "%.2f", parsed.amount)).append('\n');
+        if (parsed.amount > 0) sb.append("金额：¥").append(String.format(Locale.CHINA, "%.2f", parsed.amount)).append('\n');
         sb.append("账户：").append(parsed.account).append("    分类：").append(parsed.category).append('\n');
-        if (merchant.length() > 0) sb.append("商户/对象：").append(merchant).append('\n');
+        if (merchant.length() > 0) sb.append("商品/商户：").append(merchant).append('\n');
         if (note != null && note.length() > 0) sb.append("备注：").append(note).append('\n');
         if (time.length() > 0) sb.append("时间：").append(time).append('\n');
         if (orderNo.length() > 0) sb.append("订单号：").append(orderNo).append('\n');
@@ -165,20 +189,43 @@ public class QuickEntryActivity extends Activity {
 
     private String extractMerchant(String raw) {
         if (raw == null) return "";
-        String[] known = {"肯德基", "KFC", "麦当劳", "美团外卖", "饿了么", "瑞幸", "星巴克", "蜜雪冰城", "喜茶", "奈雪", "必胜客", "汉堡王"};
+        String[] known = {"肯德基宅急送", "肯德基", "KFC", "麦当劳", "美团外卖", "饿了么", "瑞幸", "星巴克", "蜜雪冰城", "喜茶", "奈雪", "必胜客", "汉堡王", "华莱士", "塔斯汀", "霸王茶姬", "茶百道", "古茗", "沪上阿姨", "库迪咖啡"};
         for (String k : known) if (raw.contains(k)) return k;
-        String s = extractAfter(raw, "商品说明", 28);
-        if (s.length() > 0) return cleanMerchant(s);
-        s = extractAfter(raw, "商户", 28);
-        if (s.length() > 0) return cleanMerchant(s);
-        s = extractAfter(raw, "备注", 28);
-        if (s.length() > 0) return cleanMerchant(s);
+
+        String[] keys = {"商品说明", "商品名称", "商品", "商户名称", "商户", "收款方", "对方", "备注"};
+        for (String key : keys) {
+            String s = extractField(raw, key);
+            if (s.length() > 0) return cleanMerchant(s);
+        }
         return "";
+    }
+
+    private String extractField(String raw, String key) {
+        int i = raw.indexOf(key);
+        if (i < 0) return "";
+        String sub = raw.substring(Math.min(raw.length(), i + key.length())).replaceFirst("^[：: ]+", "").trim();
+        String[] stopWords = {"商家订单号", "订单号", "账单", "分类", "标签", "备注", "账户", "金额", "日期", "支付", "收支", "取消", "保存"};
+        int cut = sub.length();
+        for (String stop : stopWords) {
+            int p = sub.indexOf(stop);
+            if (p > 0 && p < cut) cut = p;
+        }
+        if (cut > 0 && cut < sub.length()) sub = sub.substring(0, cut);
+        if (sub.length() > 36) sub = sub.substring(0, 36);
+        return sub;
     }
 
     private String cleanMerchant(String s) {
         if (s == null) return "";
-        return s.replace("订单", "").replace("商家订单号", "").replace("账单", "").replace("分类", "").replace("账户", "").replaceAll("[0-9]{6,}.*", "").replaceAll("\\s+", " ").trim();
+        return s.replace("订单", "")
+                .replace("商家订单号", "")
+                .replace("账单", "")
+                .replace("分类", "")
+                .replace("账户", "")
+                .replaceAll("[0-9]{6,}.*", "")
+                .replaceAll("[：:，,。；;\\n\\r]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     private String extractAfter(String raw, String key, int maxLen) {
@@ -204,24 +251,62 @@ public class QuickEntryActivity extends Activity {
         }
         MainActivity.Entry e = new MainActivity.Entry();
         e.amount = amount;
-        e.type = typeSpinner.getSelectedItem().toString();
-        e.category = categorySpinner.getSelectedItem().toString();
-        e.account = accountSpinner.getSelectedItem().toString();
+        e.type = cleanSpinner(typeSpinner.getSelectedItem().toString());
+        e.category = cleanSpinner(categorySpinner.getSelectedItem().toString());
+        e.account = cleanSpinner(accountSpinner.getSelectedItem().toString());
         e.note = noteInput.getText().toString().trim();
         e.source = getIntent().getStringExtra("source") == null ? "快捷记账" : getIntent().getStringExtra("source");
         e.time = System.currentTimeMillis();
         try { e.time = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).parse(dateInput.getText().toString().trim()).getTime(); } catch (Exception ignored) { }
         new MainActivity.LedgerDb(this).insert(e);
         Toast.makeText(this, "已保存入账", Toast.LENGTH_SHORT).show();
+        Intent back = new Intent(this, MainActivity.class);
+        back.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(back);
         finish();
     }
 
-    private int indexOf(String[] arr, String v) { if (v == null) return arr.length - 1; for (int i = 0; i < arr.length; i++) if (arr[i].equals(v)) return i; return arr.length - 1; }
+    private String[] categoryItems() {
+        String[] arr = new String[CATEGORIES.length];
+        for (int i = 0; i < CATEGORIES.length; i++) arr[i] = MainActivity.iconForCategory(CATEGORIES[i]) + " " + CATEGORIES[i];
+        return arr;
+    }
+
+    private String[] accountItems() {
+        String[] arr = new String[ACCOUNTS.length];
+        for (int i = 0; i < ACCOUNTS.length; i++) arr[i] = iconForAccount(ACCOUNTS[i]) + " " + ACCOUNTS[i];
+        return arr;
+    }
+
+    private String iconForAccount(String a) {
+        if ("微信".equals(a)) return "💬";
+        if ("支付宝".equals(a)) return "🔵";
+        if ("银行卡".equals(a)) return "🏦";
+        if ("信用卡".equals(a)) return "💳";
+        if ("现金".equals(a)) return "💵";
+        return "📌";
+    }
+
+    private void setTypeSelection(String value) { typeSpinner.setSelection(indexOfClean(new String[]{"💸 支出", "💰 收入"}, value)); }
+    private void setCategorySelection(String value) { categorySpinner.setSelection(indexOfClean(categoryItems(), value)); }
+    private void setAccountSelection(String value) { accountSpinner.setSelection(indexOfClean(accountItems(), value)); }
+
+    private int indexOfClean(String[] arr, String v) {
+        if (v == null) return arr.length - 1;
+        for (int i = 0; i < arr.length; i++) if (cleanSpinner(arr[i]).equals(v)) return i;
+        return arr.length - 1;
+    }
+
+    private String cleanSpinner(String s) {
+        if (s == null) return "";
+        return s.replaceAll("^[^\\p{IsHan}A-Za-z0-9]+\\s*", "").trim();
+    }
+
     private double parseDouble(String s) { try { return Double.parseDouble(s.replace("¥", "").trim()); } catch (Exception e) { return 0; } }
     private TextView label(String s) { TextView t = text(s, 13, Color.rgb(95, 100, 120), true); t.setPadding(0, dp(10), 0, dp(4)); return t; }
     private EditText input(String hint, boolean number) { EditText e = new EditText(this); e.setHint(hint); e.setTextSize(15); e.setSingleLine(false); e.setPadding(dp(12), 0, dp(12), 0); e.setBackground(round(Color.rgb(248, 250, 255), 14)); e.setInputType(number ? (InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL) : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE); return e; }
     private Spinner spinner(String[] items) { Spinner s = new Spinner(this); s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, items)); s.setBackground(round(Color.rgb(248, 250, 255), 14)); return s; }
-    private Button button(String text, int bg, int fg) { Button b = new Button(this); b.setAllCaps(false); b.setText(text); b.setTextColor(fg); b.setTextSize(14); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setBackground(round(bg, 15)); return b; }
+    private Button button(String text, int bg, int fg) { Button b = new Button(this); b.setAllCaps(false); b.setText(text); b.setTextColor(fg); b.setTextSize(14); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setBackground(round(bg, 15)); b.setOnTouchListener((v, e) -> { if (e.getAction() == MotionEvent.ACTION_DOWN) { v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70).start(); } else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) { v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(80).withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(90).start()).start(); } return false; }); return b; }
     private TextView text(String s, int sp, int color, boolean bold) { TextView t = new TextView(this); t.setText(s); t.setTextSize(sp); t.setTextColor(color); if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return t; }
     private GradientDrawable round(int color, int radius) { GradientDrawable g = new GradientDrawable(); g.setColor(color); g.setCornerRadius(dp(radius)); return g; }
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
