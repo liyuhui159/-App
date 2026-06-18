@@ -1,0 +1,116 @@
+package com.liyuhui.smartledger;
+
+import android.app.Activity;
+import android.os.Bundle;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+
+public class EntryDetailActivity extends Activity {
+    private static final int PRIMARY = Color.rgb(91, 95, 239);
+    private static final int PRIMARY_DARK = Color.rgb(34, 36, 77);
+    private static final int BG = Color.rgb(244, 247, 251);
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(18), dp(18), dp(24));
+        root.setBackgroundColor(BG);
+        scroll.addView(root);
+        setContentView(scroll);
+
+        String type = getIntent().getStringExtra("type");
+        String category = getIntent().getStringExtra("category");
+        String account = getIntent().getStringExtra("account");
+        String note = getIntent().getStringExtra("note");
+        String source = getIntent().getStringExtra("source");
+        double amount = getIntent().getDoubleExtra("amount", 0D);
+        long time = getIntent().getLongExtra("time", System.currentTimeMillis());
+        String date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(new Date(time));
+
+        TextView title = text("账目详情", 26, PRIMARY_DARK, true);
+        root.addView(title);
+        TextView money = text(("收入".equals(type) ? "+" : "-") + "¥" + String.format(Locale.CHINA, "%.2f", amount), 34, PRIMARY, true);
+        money.setGravity(Gravity.CENTER);
+        money.setPadding(0, dp(18), 0, dp(18));
+        root.addView(money);
+
+        LinearLayout card = card();
+        card.addView(row("收支类型", safe(type)));
+        card.addView(row("分类", safe(category)));
+        card.addView(row("账户", safe(account)));
+        card.addView(row("备注", safe(note)));
+        card.addView(row("来源", safe(source)));
+        card.addView(row("时间", date));
+        root.addView(card);
+
+        Button close = button("返回", PRIMARY, Color.WHITE);
+        close.setOnClickListener(v -> finish());
+        root.addView(close, new LinearLayout.LayoutParams(-1, dp(48)));
+    }
+
+    private LinearLayout row(String k, String v) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.VERTICAL);
+        r.setPadding(0, dp(8), 0, dp(8));
+        r.addView(text(k, 13, Color.rgb(105, 110, 130), true));
+        TextView value = text(v, 18, PRIMARY_DARK, false);
+        value.setPadding(0, dp(4), 0, 0);
+        r.addView(value);
+        return r;
+    }
+
+    private LinearLayout card() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(16), dp(16), dp(16), dp(16));
+        c.setBackground(round(Color.WHITE, 18));
+        c.setElevation(dp(2));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(10), 0, dp(18));
+        c.setLayoutParams(lp);
+        return c;
+    }
+
+    private Button button(String text, int bg, int fg) {
+        Button b = new Button(this);
+        b.setAllCaps(false);
+        b.setText(text);
+        b.setTextColor(fg);
+        b.setTextSize(15);
+        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        b.setBackground(round(bg, 16));
+        return b;
+    }
+
+    private TextView text(String s, int sp, int color, boolean bold) {
+        TextView t = new TextView(this);
+        t.setText(s == null ? "" : s);
+        t.setTextSize(sp);
+        t.setTextColor(color);
+        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return t;
+    }
+
+    private GradientDrawable round(int color, int radius) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp(radius));
+        return g;
+    }
+
+    private String safe(String s) { return s == null || s.trim().isEmpty() ? "无" : s.trim(); }
+    private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
+}
