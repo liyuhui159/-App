@@ -42,14 +42,14 @@ public class EntryDetailActivity extends Activity {
 
         TextView title = text("账目详情", 26, PRIMARY_DARK, true);
         root.addView(title);
-        TextView money = text(("收入".equals(type) ? "+" : "-") + "¥" + String.format(Locale.CHINA, "%.2f", amount), 34, PRIMARY, true);
+        TextView money = text(("收入".equals(type) ? "+" : "-") + "¥" + String.format(Locale.CHINA, "%.2f", amount), 36, PRIMARY, true);
         money.setGravity(Gravity.CENTER);
         money.setPadding(0, dp(18), 0, dp(18));
         root.addView(money);
 
         LinearLayout card = card();
         card.addView(row("收支类型", safe(type)));
-        card.addView(row("分类", safe(category)));
+        card.addView(row("分类", MainActivity.iconForCategory(category) + " " + safe(category)));
         card.addView(row("账户", safe(account)));
         card.addView(row("备注", safe(note)));
         card.addView(row("来源", safe(source)));
@@ -76,8 +76,8 @@ public class EntryDetailActivity extends Activity {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
         c.setPadding(dp(16), dp(16), dp(16), dp(16));
-        c.setBackground(round(Color.WHITE, 18));
-        c.setElevation(dp(2));
+        c.setBackground(glassRound(Color.argb(205, 255, 255, 255), 20));
+        c.setElevation(dp(5));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.setMargins(0, dp(10), 0, dp(18));
         c.setLayoutParams(lp);
@@ -91,7 +91,8 @@ public class EntryDetailActivity extends Activity {
         b.setTextColor(fg);
         b.setTextSize(15);
         b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        b.setBackground(round(bg, 16));
+        b.setBackground(glassRound(bg, 16));
+        b.setElevation(dp(3));
         return b;
     }
 
@@ -104,10 +105,10 @@ public class EntryDetailActivity extends Activity {
         return t;
     }
 
-    private GradientDrawable round(int color, int radius) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(color);
+    private GradientDrawable glassRound(int color, int radius) {
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{Color.argb(235, 255, 255, 255), color});
         g.setCornerRadius(dp(radius));
+        g.setStroke(dp(1), Color.argb(130, 255, 255, 255));
         return g;
     }
 
