@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">灵犀记账</string>
+    <string name="notification_listener_name">灵犀自动记账服务</string>
+</resources>
