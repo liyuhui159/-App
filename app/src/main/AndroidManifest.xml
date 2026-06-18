@@ -24,6 +24,10 @@
             android:exported="false"
             android:theme="@style/DialogActivityTheme" />
 
+        <activity
+            android:name=".EntryDetailActivity"
+            android:exported="false" />
+
         <receiver
             android:name=".QuickBootReceiver"
             android:exported="true">
