@@ -1,6 +1,9 @@
 package com.liyuhui.smartledger;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.widget.ArrayAdapter;
@@ -23,7 +26,6 @@ import java.util.Locale;
 public class QuickEntryActivity extends Activity {
     private static final int PRIMARY = Color.rgb(91, 95, 239);
     private static final int PRIMARY_DARK = Color.rgb(34, 36, 77);
-    private static final int ACCENT = Color.rgb(0, 194, 168);
     private static final String[] CATEGORIES = {"餐饮", "交通", "购物", "住房", "学习", "医疗", "娱乐", "通讯", "人情", "工资", "退款", "其他"};
     private static final String[] ACCOUNTS = {"微信", "支付宝", "银行卡", "信用卡", "现金", "其他"};
 
@@ -38,9 +40,16 @@ public class QuickEntryActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        requestNotifyPermissionIfNeeded();
         QuickNotificationHelper.show(this);
         buildUi();
         fillFromIntent();
+    }
+
+    private void requestNotifyPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 33);
+        }
     }
 
     private void buildUi() {
