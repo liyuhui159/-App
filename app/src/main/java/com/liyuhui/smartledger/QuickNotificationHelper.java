@@ -8,6 +8,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
 public class QuickNotificationHelper {
     private static final String CHANNEL_ID = "quick_ledger_channel";
     private static final int NOTIFICATION_ID = 10086;
@@ -18,7 +23,7 @@ public class QuickNotificationHelper {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "灵犀快捷记账", NotificationManager.IMPORTANCE_DEFAULT);
-            channel.setDescription("通知栏快捷记账入口");
+            channel.setDescription("今日收支与快捷记账入口");
             manager.createNotificationChannel(channel);
         }
 
@@ -26,13 +31,24 @@ public class QuickNotificationHelper {
         PendingIntent expense = PendingIntent.getActivity(context, 2, quickIntent(context, "支出"), flags());
         PendingIntent income = PendingIntent.getActivity(context, 3, quickIntent(context, "收入"), flags());
 
+        Today today = todayTotals(context);
+        String line = "收入 " + money(today.income) + "  支出 " + money(today.expense) + "  结余 " + money(today.income - today.expense);
+
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(context, CHANNEL_ID)
                 : new Notification.Builder(context);
 
+        Notification.BigTextStyle style = new Notification.BigTextStyle()
+                .bigText("今日收入：" + money(today.income)
+                        + "\n今日支出：" + money(today.expense)
+                        + "\n今日结余：" + money(today.income - today.expense)
+                        + "\n点击快速记账，或直接选择收入/支出。")
+                .setBigContentTitle("灵犀记账 · 今日收支");
+
         builder.setSmallIcon(com.liyuhui.smartledger.R.drawable.ic_launcher_foreground)
-                .setContentTitle("灵犀记账")
-                .setContentText("点击快速记账，或直接选择收入/支出")
+                .setContentTitle("灵犀记账 · 今日收支")
+                .setContentText(line)
+                .setStyle(style)
                 .setContentIntent(open)
                 .setOngoing(false)
                 .setAutoCancel(false)
@@ -40,6 +56,28 @@ public class QuickNotificationHelper {
                 .addAction(com.liyuhui.smartledger.R.drawable.ic_launcher_foreground, "记收入", income);
 
         manager.notify(NOTIFICATION_ID, builder.build());
+    }
+
+    private static Today todayTotals(Context context) {
+        Today t = new Today();
+        String today = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date());
+        List<MainActivity.Entry> list = new MainActivity.LedgerDb(context).listEntries(10000, "", "全部");
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA);
+        for (MainActivity.Entry e : list) {
+            if (!today.equals(f.format(new Date(e.time)))) continue;
+            if ("收入".equals(e.type)) t.income += e.amount;
+            else t.expense += e.amount;
+        }
+        return t;
+    }
+
+    private static String money(double v) {
+        return "¥" + String.format(Locale.CHINA, "%.2f", v);
+    }
+
+    private static class Today {
+        double income;
+        double expense;
     }
 
     private static Intent quickIntent(Context context, String type) {
