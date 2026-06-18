@@ -67,8 +67,10 @@ public class MainActivity extends Activity {
         db = new LedgerDb(this);
         requestNotifyPermissionIfNeeded();
         QuickNotificationHelper.show(this);
+        int cleaned = db.cleanFalseNotificationEntries();
         buildFrame();
         showDashboard();
+        if (cleaned > 0) toast("已清理 " + cleaned + " 条误识别通知流水");
     }
 
     private void requestNotifyPermissionIfNeeded() {
@@ -98,11 +100,11 @@ public class MainActivity extends Activity {
         quick.setOrientation(LinearLayout.HORIZONTAL);
         quick.setPadding(0, dp(12), 0, 0);
         header.addView(quick);
-        Button quickAdd = pill("+ 快速记账", Color.WHITE, PRIMARY);
+        Button quickAdd = pill("+ 快速记账", Color.argb(235, 255, 255, 255), PRIMARY);
         quickAdd.setOnClickListener(v -> startActivity(new Intent(this, QuickEntryActivity.class).putExtra("source", "首页快捷记账")));
         quick.addView(quickAdd, new LinearLayout.LayoutParams(0, dp(44), 1));
         addGap(quick, 10);
-        Button power = pill("开启权限", Color.argb(42, 255, 255, 255), Color.WHITE);
+        Button power = pill("开启权限", Color.argb(70, 255, 255, 255), Color.WHITE);
         power.setOnClickListener(v -> showPermissionDialog());
         quick.addView(power, new LinearLayout.LayoutParams(0, dp(44), 1));
 
@@ -113,7 +115,7 @@ public class MainActivity extends Activity {
         navScroll.addView(nav);
         root.addView(navScroll, new LinearLayout.LayoutParams(-1, -2));
         for (String tab : new String[]{"看板", "记账", "智能导入", "流水", "预算", "设置"}) {
-            Button b = pill(tab, tab.equals(currentTab) ? PRIMARY : Color.WHITE, tab.equals(currentTab) ? Color.WHITE : PRIMARY_DARK);
+            Button b = pill(tab, tab.equals(currentTab) ? Color.argb(225, 91, 95, 239) : Color.argb(185, 255, 255, 255), tab.equals(currentTab) ? Color.WHITE : PRIMARY_DARK);
             b.setOnClickListener(v -> {
                 currentTab = ((Button) v).getText().toString();
                 buildFrame();
@@ -159,18 +161,18 @@ public class MainActivity extends Activity {
         page.addView(row2);
 
         addSectionTitle("近 7 日 3D 消费柱状图");
-        TextView tip = text("可按住柱状图左右/上下拖动旋转视角", 13, Color.rgb(110, 115, 135), false);
-        page.addView(tip);
+        page.addView(text("按住柱状图左右/上下拖动，可旋转视角", 13, Color.rgb(110, 115, 135), false));
         Bar3DView chart = new Bar3DView(this);
         chart.setValues(db.lastSevenDays());
         page.addView(cardWrap(chart, dp(250)));
 
-        addSectionTitle("分类支出");
-        PieView pie = new PieView(this);
+        addSectionTitle("分类支出 3D 饼图");
+        page.addView(text("按住饼图左右拖动，可旋转；图例显示金额和百分比", 13, Color.rgb(110, 115, 135), false));
+        Pie3DView pie = new Pie3DView(this);
         pie.setValues(db.categoryExpense(month));
-        page.addView(cardWrap(pie, dp(220)));
+        page.addView(cardWrap(pie, dp(260)));
 
-        addSectionTitle("最近流水 · 点击可查看详情");
+        addSectionTitle("最近流水 · 点击查看详情");
         renderEntries(db.listEntries(8, "", "全部"));
     }
 
@@ -252,7 +254,9 @@ public class MainActivity extends Activity {
         export.setOnClickListener(v -> shareCsv());
         Button importCsv = secondaryButton("粘贴 CSV 导入");
         importCsv.setOnClickListener(v -> showCsvImportDialog());
-        tools.addView(search); tools.addView(type); tools.addView(apply); tools.addView(export); tools.addView(importCsv);
+        Button clean = secondaryButton("清理误识别通知");
+        clean.setOnClickListener(v -> { int n = db.cleanFalseNotificationEntries(); toast("已清理 " + n + " 条"); showRecords("", "全部"); });
+        tools.addView(search); tools.addView(type); tools.addView(apply); tools.addView(export); tools.addView(importCsv); tools.addView(clean);
         page.addView(tools);
         renderEntries(db.listEntries(200, query, typeFilter));
     }
@@ -282,7 +286,7 @@ public class MainActivity extends Activity {
         for (Budget b : budgets) {
             double used = spend.containsKey(b.category) ? spend.get(b.category) : 0;
             LinearLayout c = card();
-            c.addView(text(b.category + "  " + money(used) + " / " + money(b.amount), 16, PRIMARY_DARK, true));
+            c.addView(text(iconForCategory(b.category) + " " + b.category + "  " + money(used) + " / " + money(b.amount), 16, PRIMARY_DARK, true));
             ProgressView p = new ProgressView(this);
             p.setProgress((float) Math.min(1, used / Math.max(1, b.amount)), used > b.amount ? DANGER : ACCENT);
             c.addView(p, new LinearLayout.LayoutParams(-1, dp(18)));
@@ -297,13 +301,16 @@ public class MainActivity extends Activity {
         addSectionTitle("权限与自动识别");
         LinearLayout c = card();
         c.addView(text("建议同时开启通知权限、通知使用权和无障碍服务。", 15, PRIMARY_DARK, true));
-        c.addView(text("无障碍用于读取微信/支付宝账单页和聊天页文本；通知使用权用于读取支付通知。", 13, Color.rgb(95, 100, 120), false));
+        c.addView(text("通知自动记账已加入支付类过滤，不会再记录 VPN、流量、手表等普通通知。", 13, Color.rgb(95, 100, 120), false));
         Button a = primaryButton("开启无障碍服务");
         a.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         Button n = secondaryButton("开启通知使用权");
         n.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+        Button clean = secondaryButton("清理误识别通知流水");
+        clean.setOnClickListener(v -> toast("已清理 " + db.cleanFalseNotificationEntries() + " 条"));
         c.addView(a, new LinearLayout.LayoutParams(-1, dp(48)));
         c.addView(n, new LinearLayout.LayoutParams(-1, dp(48)));
+        c.addView(clean, new LinearLayout.LayoutParams(-1, dp(48)));
         page.addView(c);
     }
 
@@ -315,7 +322,7 @@ public class MainActivity extends Activity {
     private View entryLine(Entry e) {
         LinearLayout c = card();
         LinearLayout top = row();
-        TextView left = text(e.category + " · " + e.account, 16, PRIMARY_DARK, true);
+        TextView left = text(iconForCategory(e.category) + " " + e.category + " · " + e.account, 16, PRIMARY_DARK, true);
         TextView right = text(("收入".equals(e.type) ? "+" : "-") + money(e.amount), 17, "收入".equals(e.type) ? ACCENT : DANGER, true);
         top.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
         top.addView(right);
@@ -363,8 +370,8 @@ public class MainActivity extends Activity {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
         c.setPadding(dp(14), dp(14), dp(14), dp(14));
-        c.setBackground(round(Color.WHITE, 18));
-        c.setElevation(dp(2));
+        c.setBackground(glassRound(Color.argb(205, 255, 255, 255), 20));
+        c.setElevation(dp(5));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.setMargins(0, dp(8), 0, dp(8));
         c.setLayoutParams(lp);
@@ -386,22 +393,23 @@ public class MainActivity extends Activity {
 
     private void addSectionTitle(String s) { TextView t = text(s, 18, PRIMARY_DARK, true); t.setPadding(dp(2), dp(14), dp(2), dp(6)); page.addView(t); }
     private TextView label(String s) { TextView t = text(s, 13, Color.rgb(95, 100, 120), true); t.setPadding(0, dp(10), 0, dp(4)); return t; }
-    private TextView empty(String s) { TextView t = text(s, 15, Color.rgb(120, 125, 145), false); t.setGravity(Gravity.CENTER); t.setPadding(dp(16), dp(24), dp(16), dp(24)); t.setBackground(round(Color.WHITE, 18)); return t; }
-    private EditText input(String hint, boolean number) { EditText e = new EditText(this); e.setHint(hint); e.setTextSize(15); e.setSingleLine(false); e.setPadding(dp(12), 0, dp(12), 0); e.setBackground(round(Color.rgb(248, 250, 255), 14)); e.setInputType(number ? (InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL) : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE); return e; }
-    private Spinner spinner(String[] items) { Spinner s = new Spinner(this); s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, items)); s.setBackground(round(Color.rgb(248, 250, 255), 14)); return s; }
-    private Button primaryButton(String text) { return pill(text, PRIMARY, Color.WHITE); }
-    private Button secondaryButton(String text) { return pill(text, Color.WHITE, PRIMARY); }
-    private Button pill(String text, int bg, int fg) { Button b = new Button(this); b.setAllCaps(false); b.setText(text); b.setTextSize(14); b.setTextColor(fg); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setBackground(round(bg, 16)); return b; }
+    private TextView empty(String s) { TextView t = text(s, 15, Color.rgb(120, 125, 145), false); t.setGravity(Gravity.CENTER); t.setPadding(dp(16), dp(24), dp(16), dp(24)); t.setBackground(glassRound(Color.argb(205, 255, 255, 255), 18)); return t; }
+    private EditText input(String hint, boolean number) { EditText e = new EditText(this); e.setHint(hint); e.setTextSize(15); e.setSingleLine(false); e.setPadding(dp(12), 0, dp(12), 0); e.setBackground(glassRound(Color.argb(175, 248, 250, 255), 16)); e.setInputType(number ? (InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL) : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE); return e; }
+    private Spinner spinner(String[] items) { Spinner s = new Spinner(this); s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, items)); s.setBackground(glassRound(Color.argb(175, 248, 250, 255), 16)); return s; }
+    private Button primaryButton(String text) { return pill(text, Color.argb(225, 91, 95, 239), Color.WHITE); }
+    private Button secondaryButton(String text) { return pill(text, Color.argb(180, 255, 255, 255), PRIMARY); }
+    private Button pill(String text, int bg, int fg) { Button b = new Button(this); b.setAllCaps(false); b.setText(text); b.setTextSize(14); b.setTextColor(fg); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setBackground(glassRound(bg, 18)); b.setElevation(dp(3)); return b; }
     private TextView text(String s, int sp, int color, boolean bold) { TextView t = new TextView(this); t.setText(s); t.setTextSize(sp); t.setTextColor(color); if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); t.setLineSpacing(dp(2), 1f); return t; }
     private LinearLayout row() { LinearLayout r = new LinearLayout(this); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL); return r; }
     private void addGap(LinearLayout parent, int width) { View v = new View(this); parent.addView(v, new LinearLayout.LayoutParams(dp(width), 1)); }
-    private GradientDrawable round(int color, int radius) { GradientDrawable g = new GradientDrawable(); g.setColor(color); g.setCornerRadius(dp(radius)); return g; }
-    private GradientDrawable gradient(int c1, int c2) { GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{c1, c2}); return g; }
+    private GradientDrawable glassRound(int color, int radius) { GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{Color.argb(230, 255, 255, 255), color}); g.setCornerRadius(dp(radius)); g.setStroke(dp(1), Color.argb(130, 255, 255, 255)); return g; }
+    private GradientDrawable gradient(int c1, int c2) { return new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{c1, c2}); }
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
     private String money(double v) { return "¥" + String.format(Locale.CHINA, "%.2f", v); }
     private double parseDouble(String s) { try { return Double.parseDouble(s.replace("¥", "").trim()); } catch (Exception e) { return 0; } }
     private long parseDate(String s) { try { if (!s.isEmpty()) return dateFmt.parse(s).getTime(); } catch (Exception ignored) {} return System.currentTimeMillis(); }
+    public static String iconForCategory(String c) { if ("餐饮".equals(c)) return "🍜"; if ("交通".equals(c)) return "🚗"; if ("购物".equals(c)) return "🛍️"; if ("住房".equals(c)) return "🏠"; if ("学习".equals(c)) return "📚"; if ("医疗".equals(c)) return "💊"; if ("娱乐".equals(c)) return "🎮"; if ("通讯".equals(c)) return "📱"; if ("人情".equals(c)) return "🧧"; if ("工资".equals(c)) return "💼"; if ("退款".equals(c)) return "↩️"; return "📌"; }
 
     public static class Entry { public long id; public double amount; public String type = "支出"; public String category = "其他"; public String account = "其他"; public String note = ""; public String source = "手动记账"; public long time = System.currentTimeMillis(); }
     public static class Totals { double income, expense, todayExpense; }
@@ -410,29 +418,9 @@ public class MainActivity extends Activity {
     public static class SmartParser {
         private static final Pattern AMOUNT = Pattern.compile("[-+]?\\d+(?:\\.\\d{1,2})?");
         public static List<Entry> parse(String raw) { List<Entry> result = new ArrayList<>(); if (raw == null) return result; for (String line : raw.split("\\n|；|;。")) { Entry e = parseOne(line.trim()); if (e != null) result.add(e); } return result; }
-        public static Entry parseOne(String line) {
-            if (line == null || line.trim().isEmpty()) return null;
-            double chosen = 0; Matcher m = AMOUNT.matcher(line.replace(",", ""));
-            while (m.find()) { double v = Math.abs(toDouble(m.group())); if (v > 0 && v < 100000000) { chosen = v; break; } }
-            if (chosen <= 0) return null;
-            Entry e = new Entry(); e.amount = chosen; e.type = inferType(line); e.category = inferCategory(line, e.type); e.account = inferAccount(line); e.note = cleanNote(line); e.source = "智能解析"; e.time = inferDate(line); return e;
-        }
+        public static Entry parseOne(String line) { if (line == null || line.trim().isEmpty()) return null; double chosen = 0; Matcher m = AMOUNT.matcher(line.replace(",", "")); while (m.find()) { double v = Math.abs(toDouble(m.group())); if (v > 0 && v < 100000000) { chosen = v; break; } } if (chosen <= 0) return null; Entry e = new Entry(); e.amount = chosen; e.type = inferType(line); e.category = inferCategory(line, e.type); e.account = inferAccount(line); e.note = cleanNote(line); e.source = "智能解析"; e.time = inferDate(line); return e; }
         private static String inferType(String s) { String t = s.toLowerCase(Locale.ROOT); if (s.contains("收入") || s.contains("工资") || s.contains("到账") || s.contains("收款") || s.contains("退款") || s.contains("奖金") || t.contains("income") || s.contains("+")) return "收入"; return "支出"; }
-        public static String inferCategory(String s, String type) {
-            if (s == null) return "其他";
-            String lower = s.toLowerCase(Locale.ROOT);
-            if ("收入".equals(type)) { if (has(s, "工资", "薪", "奖金")) return "工资"; if (has(s, "退款", "退回")) return "退款"; return "其他"; }
-            if (has(s, "肯德基", "麦当劳", "必胜客", "汉堡王", "瑞幸", "星巴克", "蜜雪", "喜茶", "奈雪", "茶百道", "古茗", "美团", "饿了么", "外卖", "饭", "餐", "食堂", "超市", "咖啡", "奶茶", "火锅", "烧烤", "小吃") || lower.contains("kfc") || lower.contains("mcdonald")) return "餐饮";
-            if (has(s, "滴滴", "打车", "公交", "地铁", "高铁", "火车", "机票", "油费", "停车")) return "交通";
-            if (has(s, "淘宝", "天猫", "京东", "拼多多", "购物", "衣服", "鞋", "数码", "抖音商城")) return "购物";
-            if (has(s, "房租", "水电", "物业", "燃气", "宽带", "租金")) return "住房";
-            if (has(s, "书", "课程", "学费", "考试", "培训", "文具")) return "学习";
-            if (has(s, "医院", "药", "挂号", "医保", "体检")) return "医疗";
-            if (has(s, "电影", "游戏", "会员", "娱乐", "KTV", "旅游")) return "娱乐";
-            if (has(s, "话费", "流量", "通讯")) return "通讯";
-            if (has(s, "红包", "转账", "礼物", "请客", "份子")) return "人情";
-            return "其他";
-        }
+        public static String inferCategory(String s, String type) { if (s == null) return "其他"; String lower = s.toLowerCase(Locale.ROOT); if ("收入".equals(type)) { if (has(s, "工资", "薪", "奖金")) return "工资"; if (has(s, "退款", "退回")) return "退款"; return "其他"; } if (has(s, "肯德基", "麦当劳", "必胜客", "汉堡王", "瑞幸", "星巴克", "蜜雪", "喜茶", "奈雪", "茶百道", "古茗", "美团", "饿了么", "外卖", "饭", "餐", "食堂", "超市", "咖啡", "奶茶", "火锅", "烧烤", "小吃") || lower.contains("kfc") || lower.contains("mcdonald")) return "餐饮"; if (has(s, "滴滴", "打车", "公交", "地铁", "高铁", "火车", "机票", "油费", "停车")) return "交通"; if (has(s, "淘宝", "天猫", "京东", "拼多多", "购物", "衣服", "鞋", "数码", "抖音商城")) return "购物"; if (has(s, "房租", "水电", "物业", "燃气", "宽带", "租金")) return "住房"; if (has(s, "书", "课程", "学费", "考试", "培训", "文具")) return "学习"; if (has(s, "医院", "药", "挂号", "医保", "体检")) return "医疗"; if (has(s, "电影", "游戏", "会员", "娱乐", "KTV", "旅游")) return "娱乐"; if (has(s, "话费", "流量", "通讯")) return "通讯"; if (has(s, "红包", "转账", "礼物", "请客", "份子")) return "人情"; return "其他"; }
         private static boolean has(String s, String... keys) { for (String k : keys) if (s.contains(k)) return true; return false; }
         private static String inferAccount(String s) { if (s.contains("微信")) return "微信"; if (s.contains("支付宝") || s.contains("花呗")) return "支付宝"; if (s.contains("信用卡")) return "信用卡"; if (s.contains("银行") || s.contains("招商") || s.contains("工商") || s.contains("建设") || s.contains("农业")) return "银行卡"; if (s.contains("现金")) return "现金"; return "其他"; }
         private static String cleanNote(String s) { return s.replaceAll("[-+]?\\d+(?:\\.\\d{1,2})?", "").replace("¥", "").replace("元", "").replaceAll("\\s+", " ").trim(); }
@@ -440,37 +428,26 @@ public class MainActivity extends Activity {
         private static long inferDate(String s) { Calendar c = Calendar.getInstance(); if (s.contains("昨天")) c.add(Calendar.DATE, -1); if (s.contains("前天")) c.add(Calendar.DATE, -2); Matcher m = Pattern.compile("(20\\d{2})[-/年](\\d{1,2})[-/月](\\d{1,2})").matcher(s); if (m.find()) { c.set(Calendar.YEAR, Integer.parseInt(m.group(1))); c.set(Calendar.MONTH, Integer.parseInt(m.group(2)) - 1); c.set(Calendar.DAY_OF_MONTH, Integer.parseInt(m.group(3))); } return c.getTimeInMillis(); }
     }
 
-    public static class LedgerDb extends SQLiteOpenHelper {
-        public LedgerDb(Context c) { super(c, "smart_ledger.db", null, 1); }
+    public static class LedgerDb extends SQLiteOpenHelper { public LedgerDb(Context c) { super(c, "smart_ledger.db", null, 1); }
         @Override public void onCreate(SQLiteDatabase db) { db.execSQL("CREATE TABLE entries(id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, type TEXT, category TEXT, account TEXT, note TEXT, source TEXT, time INTEGER)"); db.execSQL("CREATE TABLE budgets(id INTEGER PRIMARY KEY AUTOINCREMENT, month TEXT, category TEXT, amount REAL, UNIQUE(month, category))"); db.execSQL("CREATE TABLE recurring(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount REAL, type TEXT, category TEXT, account TEXT, day INTEGER, last_month TEXT)"); }
         @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) { }
         public long insert(Entry e) { ContentValues v = new ContentValues(); v.put("amount", e.amount); v.put("type", e.type); v.put("category", e.category); v.put("account", e.account); v.put("note", e.note); v.put("source", e.source); v.put("time", e.time); return getWritableDatabase().insert("entries", null, v); }
         public void delete(long id) { getWritableDatabase().delete("entries", "id=?", new String[]{String.valueOf(id)}); }
+        public int cleanFalseNotificationEntries() { return getWritableDatabase().delete("entries", "source=? AND (note LIKE ? OR note LIKE ? OR note LIKE ? OR note LIKE ? OR note LIKE ?)", new String[]{"通知自动记账", "%Bytes/s%", "%US%", "%VPN%", "%KiB/s%", "%HUAWEI WATCH%"}); }
         public List<Entry> listEntries(int limit, String query, String type) { List<Entry> list = new ArrayList<>(); StringBuilder where = new StringBuilder("1=1"); List<String> args = new ArrayList<>(); if (query != null && !query.isEmpty()) { where.append(" AND (note LIKE ? OR category LIKE ? OR account LIKE ?)"); String q = "%" + query + "%"; args.add(q); args.add(q); args.add(q); } if (type != null && !"全部".equals(type)) { where.append(" AND type=?"); args.add(type); } Cursor c = getReadableDatabase().query("entries", null, where.toString(), args.toArray(new String[0]), null, null, "time DESC, id DESC", String.valueOf(limit)); while (c.moveToNext()) list.add(readEntry(c)); c.close(); return list; }
         private Entry readEntry(Cursor c) { Entry e = new Entry(); e.id = c.getLong(c.getColumnIndexOrThrow("id")); e.amount = c.getDouble(c.getColumnIndexOrThrow("amount")); e.type = c.getString(c.getColumnIndexOrThrow("type")); e.category = c.getString(c.getColumnIndexOrThrow("category")); e.account = c.getString(c.getColumnIndexOrThrow("account")); e.note = c.getString(c.getColumnIndexOrThrow("note")); e.source = c.getString(c.getColumnIndexOrThrow("source")); e.time = c.getLong(c.getColumnIndexOrThrow("time")); return e; }
         public Totals monthTotals(String month) { Totals t = new Totals(); String today = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date()); for (Entry e : listEntries(10000, "", "全部")) { String m = new SimpleDateFormat("yyyy-MM", Locale.CHINA).format(new Date(e.time)); if (!month.equals(m)) continue; if ("收入".equals(e.type)) t.income += e.amount; else t.expense += e.amount; String d = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date(e.time)); if (today.equals(d) && "支出".equals(e.type)) t.todayExpense += e.amount; } return t; }
         public Map<String, Double> categoryExpense(String month) { Map<String, Double> map = new LinkedHashMap<>(); SimpleDateFormat f = new SimpleDateFormat("yyyy-MM", Locale.CHINA); for (Entry e : listEntries(10000, "", "支出")) { if (!month.equals(f.format(new Date(e.time)))) continue; map.put(e.category, map.containsKey(e.category) ? map.get(e.category) + e.amount : e.amount); } return map; }
         public Map<String, Double> lastSevenDays() { Map<String, Double> map = new LinkedHashMap<>(); Calendar c = Calendar.getInstance(); SimpleDateFormat f = new SimpleDateFormat("MM-dd", Locale.CHINA); for (int i = 6; i >= 0; i--) { Calendar x = (Calendar) c.clone(); x.add(Calendar.DATE, -i); map.put(f.format(x.getTime()), 0d); } for (Entry e : listEntries(10000, "", "支出")) { String d = f.format(new Date(e.time)); if (map.containsKey(d)) map.put(d, map.get(d) + e.amount); } return map; }
         public void setBudget(String month, String category, double amount) { ContentValues v = new ContentValues(); v.put("month", month); v.put("category", category); v.put("amount", amount); getWritableDatabase().insertWithOnConflict("budgets", null, v, SQLiteDatabase.CONFLICT_REPLACE); }
-        public List<Budget> listBudgets(String month) { List<Budget> list = new ArrayList<>(); Cursor c = getReadableDatabase().query("budgets", null, "month=?", new String[]{month}, null, null, "category ASC"); while (c.moveToNext()) { Budget b = new Budget(); b.category = c.getString(c.getColumnIndexOrThrow("category")); b.amount = c.getDouble(c.getColumnIndexOrThrow("amount")); list.add(b); } c.close(); return list; }
-    }
+        public List<Budget> listBudgets(String month) { List<Budget> list = new ArrayList<>(); Cursor c = getReadableDatabase().query("budgets", null, "month=?", new String[]{month}, null, null, "category ASC"); while (c.moveToNext()) { Budget b = new Budget(); b.category = c.getString(c.getColumnIndexOrThrow("category")); b.amount = c.getDouble(c.getColumnIndexOrThrow("amount")); list.add(b); } c.close(); return list; }}
 
-    public static class Csv { public static String toCsv(List<Entry> entries) { StringBuilder sb = new StringBuilder("date,type,category,account,amount,note,source\n"); SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA); for (Entry e : entries) sb.append(f.format(new Date(e.time))).append(',').append(e.type).append(',').append(e.category).append(',').append(e.account).append(',').append(e.amount).append(',').append('"').append(e.note == null ? "" : e.note.replace("\"", "\"\"")).append('"').append(',').append('"').append(e.source == null ? "" : e.source.replace("\"", "\"\"")).append('"').append('\n'); return sb.toString(); }
-        public static List<Entry> fromCsv(String csv) { List<Entry> list = new ArrayList<>(); if (csv == null) return list; SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA); for (String line : csv.split("\\n")) { if (line.toLowerCase(Locale.ROOT).startsWith("date,") || line.trim().isEmpty()) continue; String[] p = line.split(",", -1); if (p.length < 5) continue; Entry e = new Entry(); try { e.time = f.parse(p[0].trim()).getTime(); } catch (Exception ignored) {} e.type = p[1].trim().isEmpty() ? "支出" : p[1].trim(); e.category = p[2].trim().isEmpty() ? "其他" : p[2].trim(); e.account = p[3].trim().isEmpty() ? "其他" : p[3].trim(); e.amount = SmartParser.toDouble(p[4].trim()); e.note = p.length > 5 ? p[5].replace("\"", "") : ""; e.source = "CSV导入"; if (e.amount > 0) list.add(e); } return list; }}
+    public static class Csv { public static String toCsv(List<Entry> entries) { StringBuilder sb = new StringBuilder("date,type,category,account,amount,note,source\n"); SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA); for (Entry e : entries) sb.append(f.format(new Date(e.time))).append(',').append(e.type).append(',').append(e.category).append(',').append(e.account).append(',').append(e.amount).append(',').append('"').append(e.note == null ? "" : e.note.replace("\"", "\"\"")).append('"').append(',').append('"').append(e.source == null ? "" : e.source.replace("\"", "\"\"")).append('"').append('\n'); return sb.toString(); } public static List<Entry> fromCsv(String csv) { List<Entry> list = new ArrayList<>(); if (csv == null) return list; SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA); for (String line : csv.split("\\n")) { if (line.toLowerCase(Locale.ROOT).startsWith("date,") || line.trim().isEmpty()) continue; String[] p = line.split(",", -1); if (p.length < 5) continue; Entry e = new Entry(); try { e.time = f.parse(p[0].trim()).getTime(); } catch (Exception ignored) {} e.type = p[1].trim().isEmpty() ? "支出" : p[1].trim(); e.category = p[2].trim().isEmpty() ? "其他" : p[2].trim(); e.account = p[3].trim().isEmpty() ? "其他" : p[3].trim(); e.amount = SmartParser.toDouble(p[4].trim()); e.note = p.length > 5 ? p[5].replace("\"", "") : ""; e.source = "CSV导入"; if (e.amount > 0) list.add(e); } return list; }}
 
-    public static class Bar3DView extends View { private Map<String, Double> values = new LinkedHashMap<>(); private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); private float rotX = 0.45f, rotY = 0.7f, lastX, lastY; private final int[] colors = {PRIMARY, ACCENT, WARNING, DANGER, Color.rgb(118, 90, 224), Color.rgb(56, 180, 230), Color.rgb(255, 128, 128)}; public Bar3DView(Context c) { super(c); setPadding(8,8,8,8); }
-        public void setValues(Map<String, Double> v) { values = v == null ? new LinkedHashMap<>() : v; invalidate(); }
-        @Override public boolean onTouchEvent(MotionEvent e) { if (e.getAction()==MotionEvent.ACTION_DOWN) { lastX=e.getX(); lastY=e.getY(); return true; } if (e.getAction()==MotionEvent.ACTION_MOVE) { rotY += (e.getX()-lastX)/180f; rotX += (e.getY()-lastY)/220f; rotX=Math.max(-0.6f, Math.min(0.9f, rotX)); lastX=e.getX(); lastY=e.getY(); invalidate(); return true; } return true; }
-        @Override protected void onDraw(Canvas c) { super.onDraw(c); p.setTextSize(24); if (values.isEmpty()) { p.setColor(Color.rgb(105,110,130)); p.setTextAlign(Paint.Align.CENTER); c.drawText("暂无数据", getWidth()/2f, getHeight()/2f, p); return; } double max = 1; for (double v: values.values()) max = Math.max(max, v); int n = values.size(); float gap = 16; float w = (getWidth()-gap*(n+1))/Math.max(1,n); float base = getHeight()-46; float depthX = 18 + 28*rotY; float depthY = -18 - 25*rotX; int i=0; p.setTextAlign(Paint.Align.CENTER); for (Map.Entry<String,Double> e: values.entrySet()) { float left = gap + i*(w+gap); float h = (float)(e.getValue()/max*(getHeight()-90)); int color = colors[i%colors.length]; drawBar(c,left,base,w,h,depthX,depthY,color); p.setColor(Color.rgb(105,110,130)); p.setTextSize(21); c.drawText(e.getKey(), left+w/2, getHeight()-14, p); i++; }}
-        private void drawBar(Canvas c,float x,float base,float w,float h,float dx,float dy,int color){ float top=base-h; p.setColor(color); RectF front=new RectF(x,top,x+w,base); c.drawRoundRect(front,8,8,p); Path topP=new Path(); topP.moveTo(x,top); topP.lineTo(x+dx,top+dy); topP.lineTo(x+w+dx,top+dy); topP.lineTo(x+w,top); topP.close(); p.setColor(light(color)); c.drawPath(topP,p); Path side=new Path(); side.moveTo(x+w,top); side.lineTo(x+w+dx,top+dy); side.lineTo(x+w+dx,base+dy); side.lineTo(x+w,base); side.close(); p.setColor(dark(color)); c.drawPath(side,p); }
-        private int light(int c){ return Color.rgb(Math.min(255,(int)(Color.red(c)*1.25)),Math.min(255,(int)(Color.green(c)*1.25)),Math.min(255,(int)(Color.blue(c)*1.25))); }
-        private int dark(int c){ return Color.rgb((int)(Color.red(c)*0.7),(int)(Color.green(c)*0.7),(int)(Color.blue(c)*0.7)); }}
+    public static class Bar3DView extends View { private Map<String, Double> values = new LinkedHashMap<>(); private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); private float rotX = 0.45f, rotY = 0.7f, lastX, lastY; private final int[] colors = {PRIMARY, ACCENT, WARNING, DANGER, Color.rgb(118, 90, 224), Color.rgb(56, 180, 230), Color.rgb(255, 128, 128)}; public Bar3DView(Context c) { super(c); setPadding(8,8,8,8); } public void setValues(Map<String, Double> v) { values = v == null ? new LinkedHashMap<>() : v; invalidate(); } @Override public boolean onTouchEvent(MotionEvent e) { if (e.getAction()==MotionEvent.ACTION_DOWN) { lastX=e.getX(); lastY=e.getY(); return true; } if (e.getAction()==MotionEvent.ACTION_MOVE) { rotY += (e.getX()-lastX)/180f; rotX += (e.getY()-lastY)/220f; rotX=Math.max(-0.6f, Math.min(0.9f, rotX)); lastX=e.getX(); lastY=e.getY(); invalidate(); return true; } return true; } @Override protected void onDraw(Canvas c) { super.onDraw(c); p.setTextSize(24); if (values.isEmpty()) { p.setColor(Color.rgb(105,110,130)); p.setTextAlign(Paint.Align.CENTER); c.drawText("暂无数据", getWidth()/2f, getHeight()/2f, p); return; } double max = 1; for (double v: values.values()) max = Math.max(max, v); int n = values.size(); float gap = 16; float w = (getWidth()-gap*(n+1))/Math.max(1,n); float base = getHeight()-46; float depthX = 18 + 28*rotY; float depthY = -18 - 25*rotX; int i=0; p.setTextAlign(Paint.Align.CENTER); for (Map.Entry<String,Double> e: values.entrySet()) { float left = gap + i*(w+gap); float h = (float)(e.getValue()/max*(getHeight()-90)); int color = colors[i%colors.length]; drawBar(c,left,base,w,h,depthX,depthY,color); p.setColor(Color.rgb(105,110,130)); p.setTextSize(21); c.drawText(e.getKey(), left+w/2, getHeight()-14, p); i++; }} private void drawBar(Canvas c,float x,float base,float w,float h,float dx,float dy,int color){ float top=base-h; p.setColor(color); RectF front=new RectF(x,top,x+w,base); c.drawRoundRect(front,8,8,p); Path topP=new Path(); topP.moveTo(x,top); topP.lineTo(x+dx,top+dy); topP.lineTo(x+w+dx,top+dy); topP.lineTo(x+w,top); topP.close(); p.setColor(light(color)); c.drawPath(topP,p); Path side=new Path(); side.moveTo(x+w,top); side.lineTo(x+w+dx,top+dy); side.lineTo(x+w+dx,base+dy); side.lineTo(x+w,base); side.close(); p.setColor(dark(color)); c.drawPath(side,p); } private int light(int c){ return Color.rgb(Math.min(255,(int)(Color.red(c)*1.25)),Math.min(255,(int)(Color.green(c)*1.25)),Math.min(255,(int)(Color.blue(c)*1.25))); } private int dark(int c){ return Color.rgb((int)(Color.red(c)*0.7),(int)(Color.green(c)*0.7),(int)(Color.blue(c)*0.7)); }}
 
-    public static class PieView extends View { private Map<String, Double> values = new LinkedHashMap<>(); private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); private final int[] colors = {PRIMARY, ACCENT, WARNING, DANGER, Color.rgb(118, 90, 224), Color.rgb(56, 180, 230), Color.rgb(255, 128, 128)}; public PieView(Context c){super(c);} public void setValues(Map<String,Double> v){values=v==null?new LinkedHashMap<>():v; invalidate();} @Override protected void onDraw(Canvas c){ if(values.isEmpty()){p.setColor(Color.rgb(105,110,130));p.setTextAlign(Paint.Align.CENTER);p.setTextSize(26);c.drawText("暂无数据",getWidth()/2f,getHeight()/2f,p);return;} float total=0; for(double v:values.values()) total+=v; RectF oval=new RectF(20,20,Math.min(getHeight()-20,getWidth()*0.55f),Math.min(getHeight()-20,getWidth()*0.55f)); float start=-90; int i=0; for(Map.Entry<String,Double> e:values.entrySet()){p.setColor(colors[i%colors.length]); float sweep=(float)(e.getValue()/total*360f); c.drawArc(oval,start,sweep,true,p); start+=sweep; i++;} p.setTextAlign(Paint.Align.LEFT);p.setTextSize(23);float y=36;i=0; for(Map.Entry<String,Double> e:values.entrySet()){p.setColor(colors[i%colors.length]);c.drawRoundRect(getWidth()*0.62f,y-18,getWidth()*0.62f+22,y+4,8,8,p);p.setColor(PRIMARY_DARK);c.drawText(e.getKey()+" ¥"+String.format(Locale.CHINA,"%.0f",e.getValue()),getWidth()*0.62f+32,y,p);y+=34;i++; if(y>getHeight()-16)break;}}}
+    public static class Pie3DView extends View { private Map<String, Double> values = new LinkedHashMap<>(); private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); private float startAngle = -80f, lastX; private final int[] colors = {PRIMARY, ACCENT, WARNING, DANGER, Color.rgb(118,90,224), Color.rgb(56,180,230), Color.rgb(255,128,128), Color.rgb(80,200,130)}; public Pie3DView(Context c){super(c);} public void setValues(Map<String,Double> v){values=v==null?new LinkedHashMap<>():v;invalidate();} @Override public boolean onTouchEvent(MotionEvent e){ if(e.getAction()==MotionEvent.ACTION_DOWN){lastX=e.getX();return true;} if(e.getAction()==MotionEvent.ACTION_MOVE){startAngle += (e.getX()-lastX)/2.2f; lastX=e.getX(); invalidate(); return true;} return true;} @Override protected void onDraw(Canvas c){ if(values.isEmpty()){p.setColor(Color.rgb(105,110,130));p.setTextAlign(Paint.Align.CENTER);p.setTextSize(26);c.drawText("暂无数据",getWidth()/2f,getHeight()/2f,p);return;} double total=0; for(double v:values.values()) total+=v; float cx=getWidth()*0.32f; float cy=getHeight()*0.43f; float rx=Math.min(getWidth()*0.25f, getHeight()*0.32f); float ry=rx*0.62f; RectF oval=new RectF(cx-rx,cy-ry,cx+rx,cy+ry); for(int layer=14; layer>=1; layer--){ float y=layer*2.2f; float a=startAngle; int i=0; for(Map.Entry<String,Double> e:values.entrySet()){float sweep=(float)(e.getValue()/total*360f); p.setColor(dark(colors[i%colors.length])); RectF o=new RectF(oval.left,oval.top+y,oval.right,oval.bottom+y); c.drawArc(o,a,sweep,true,p); a+=sweep;i++;}} float a=startAngle; int i=0; for(Map.Entry<String,Double> e:values.entrySet()){float sweep=(float)(e.getValue()/total*360f); p.setColor(colors[i%colors.length]); c.drawArc(oval,a,sweep,true,p); a+=sweep;i++;} p.setTextAlign(Paint.Align.LEFT);p.setTextSize(22);float y=26;i=0; for(Map.Entry<String,Double> e:values.entrySet()){ double percent=e.getValue()/total*100d; p.setColor(colors[i%colors.length]); c.drawRoundRect(getWidth()*0.60f,y-17,getWidth()*0.60f+22,y+5,8,8,p); p.setColor(PRIMARY_DARK); c.drawText(iconForCategory(e.getKey())+" "+e.getKey(),getWidth()*0.60f+30,y,p); p.setTextSize(19); p.setColor(Color.rgb(95,100,120)); c.drawText("¥"+String.format(Locale.CHINA,"%.2f",e.getValue())+"  "+String.format(Locale.CHINA,"%.1f%%",percent),getWidth()*0.60f+30,y+25,p); p.setTextSize(22); y+=58; i++; if(y>getHeight()-36)break;} } private int dark(int c){return Color.rgb((int)(Color.red(c)*0.62),(int)(Color.green(c)*0.62),(int)(Color.blue(c)*0.62));}}
     public static class ProgressView extends View { private float progress; private int color = ACCENT; private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); public ProgressView(Context c){super(c);} public void setProgress(float progress,int color){this.progress=progress;this.color=color;invalidate();} @Override protected void onDraw(Canvas c){p.setColor(Color.rgb(230,235,245));c.drawRoundRect(0,0,getWidth(),getHeight(),getHeight()/2f,getHeight()/2f,p);p.setColor(color);c.drawRoundRect(0,0,getWidth()*progress,getHeight(),getHeight()/2f,getHeight()/2f,p);}}
 
-    public static class AutoLedgerNotificationService extends android.service.notification.NotificationListenerService {
-        @Override public void onListenerConnected(){ super.onListenerConnected(); QuickNotificationHelper.show(this); }
-        @Override public void onNotificationPosted(android.service.notification.StatusBarNotification sbn){ if(sbn==null || sbn.getNotification()==null || sbn.getNotification().extras==null)return; CharSequence title=sbn.getNotification().extras.getCharSequence("android.title"); CharSequence text=sbn.getNotification().extras.getCharSequence("android.text"); String raw=(title==null?"":title.toString())+" "+(text==null?"":text.toString()); if(!raw.matches(".*[-+]?\\d+(?:\\.\\d{1,2})?.*"))return; Entry e=SmartParser.parseOne(raw); if(e==null)return; e.source="通知自动记账"; new LedgerDb(this).insert(e); }
-    }
+    public static class AutoLedgerNotificationService extends android.service.notification.NotificationListenerService { @Override public void onListenerConnected(){ super.onListenerConnected(); QuickNotificationHelper.show(this); } @Override public void onNotificationPosted(android.service.notification.StatusBarNotification sbn){ if(sbn==null || sbn.getNotification()==null || sbn.getNotification().extras==null)return; String pkg=sbn.getPackageName()==null?"":sbn.getPackageName().toLowerCase(Locale.ROOT); CharSequence title=sbn.getNotification().extras.getCharSequence("android.title"); CharSequence text=sbn.getNotification().extras.getCharSequence("android.text"); CharSequence big=sbn.getNotification().extras.getCharSequence("android.bigText"); String raw=(title==null?"":title.toString())+" "+(text==null?"":text.toString())+" "+(big==null?"":big.toString()); if(!isPayPackage(pkg) || !looksLikePayment(raw)) return; Entry e=SmartParser.parseOne(raw); if(e==null)return; e.source="通知自动记账"; if("其他".equals(e.account)) e.account=accountFromPackage(pkg); if("其他".equals(e.category)) e.category=SmartParser.inferCategory(raw,e.type); new LedgerDb(this).insert(e); } private boolean isPayPackage(String p){ return p.contains("tencent.mm") || p.contains("alipay") || p.contains("unionpay") || p.contains("bank") || p.contains("cmb") || p.contains("icbc") || p.contains("ccb") || p.contains("abc") || p.contains("boc"); } private boolean looksLikePayment(String s){ if(s==null)return false; boolean money=s.contains("¥")||s.contains("元")||s.contains("金额")||s.matches(".*(?:支付|付款|消费|收款|到账|退款|转账|红包).*[0-9]+(?:\\.[0-9]{1,2})?.*"); boolean word=s.contains("支付")||s.contains("付款")||s.contains("消费")||s.contains("收款")||s.contains("到账")||s.contains("退款")||s.contains("转账")||s.contains("红包")||s.contains("订单"); boolean bad=s.contains("Bytes/s")||s.contains("KiB/s")||s.contains("VPN")||s.contains("HUAWEI WATCH")||s.contains("已连接")||s.contains("US -"); return money && word && !bad; } private String accountFromPackage(String p){ if(p.contains("tencent.mm"))return "微信"; if(p.contains("alipay"))return "支付宝"; return "银行卡"; }}
 }
