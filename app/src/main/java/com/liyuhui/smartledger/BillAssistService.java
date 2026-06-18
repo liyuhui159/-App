@@ -14,9 +14,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class BillAssistService extends AccessibilityService {
-    private static final int MAX_LEN = 2200;
+    private static final int MAX_LEN = 1400;
     private static final long REPEAT_MS = 30000L;
     private static final long PENDING_MS = 120000L;
+    private static final long EVENT_THROTTLE_MS = 350L;
+    private long lastEventAt = 0L;
+    private String lastShortText = "";
 
     @Override
     protected void onServiceConnected() {
@@ -30,10 +33,25 @@ public class BillAssistService extends AccessibilityService {
         String pkg = event.getPackageName() == null ? "" : event.getPackageName().toString();
         if (!isPayRelatedPackage(pkg)) return;
 
-        StringBuilder sb = new StringBuilder();
-        addEventText(event, sb);
-        readNode(getRootInActiveWindow(), sb, new HashSet<>(), 0);
-        String text = normalize(sb.toString());
+        StringBuilder eventTextBuilder = new StringBuilder();
+        addEventText(event, eventTextBuilder);
+        String eventText = normalize(eventTextBuilder.toString());
+        long now = System.currentTimeMillis();
+        if (eventText.equals(lastShortText) && now - lastEventAt < EVENT_THROTTLE_MS) return;
+        lastShortText = eventText;
+        lastEventAt = now;
+
+        boolean hasPending = hasValidPending(pkg);
+        boolean needDeepScan = fastMayBePayment(eventText) || hasPending || event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
+        if (!needDeepScan) return;
+
+        String text = eventText;
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root != null) {
+            StringBuilder sb = new StringBuilder(eventText);
+            readNode(root, sb, new HashSet<>(), 0);
+            text = normalize(sb.toString());
+        }
         if (text.length() < 4) return;
 
         if (isWeChatPaymentSuccess(text)) {
@@ -50,6 +68,18 @@ public class BillAssistService extends AccessibilityService {
 
     @Override
     public void onInterrupt() { }
+
+    private boolean hasValidPending(String pkg) {
+        SharedPreferences sp = getSharedPreferences("bill_assist_pending", MODE_PRIVATE);
+        long savedAt = sp.getLong("time", 0L);
+        String pendingPkg = sp.getString("pkg", "");
+        return savedAt > 0 && pkg.equals(pendingPkg) && System.currentTimeMillis() - savedAt <= PENDING_MS;
+    }
+
+    private boolean fastMayBePayment(String t) {
+        if (t == null) return false;
+        return t.contains("支付成功") || t.contains("确认收款") || t.contains("¥") || t.contains("元") || t.contains("转账") || t.contains("红包") || t.contains("账单") || t.contains("订单") || t.contains("付款") || t.contains("收款") || t.contains("消费");
+    }
 
     private void cachePendingPayment(String pkg, String text) {
         MainActivity.Entry e = MainActivity.SmartParser.parseOne(text);
@@ -120,13 +150,13 @@ public class BillAssistService extends AccessibilityService {
     private boolean isWeChatPaymentSuccess(String t) {
         return t.contains("支付成功")
                 && t.matches(".*[-+]?\\d+(?:\\.\\d{1,2})?.*")
-                && (t.contains("待") && t.contains("确认收款") || t.contains("完成"));
+                && ((t.contains("待") && t.contains("确认收款")) || t.contains("完成"));
     }
 
     private boolean isBillDetail(String t) {
         if (t == null || t.length() < 8) return false;
         boolean money = t.matches(".*[-+]?\\d+(?:\\.\\d{1,2})?.*") && (t.contains("元") || t.contains("¥") || t.contains("付款") || t.contains("支付") || t.contains("消费") || t.contains("收款") || t.contains("到账") || t.contains("退款"));
-        boolean detail = t.contains("支付成功") || t.contains("当前状态") || t.contains("转账时间") || t.contains("转账单号") || t.contains("支付方式") || t.contains("账单") || t.contains("订单") || t.contains("二维码收款") || t.contains("收款方备注");
+        boolean detail = t.contains("支付成功") || t.contains("当前状态") || t.contains("转账时间") || t.contains("转账单号") || t.contains("支付方式") || t.contains("账单") || t.contains("订单") || t.contains("二维码收款") || t.contains("收款方备注") || t.contains("商品说明") || t.contains("商户");
         return money && detail;
     }
 
@@ -191,7 +221,7 @@ public class BillAssistService extends AccessibilityService {
     }
 
     private void readNode(AccessibilityNodeInfo node, StringBuilder sb, Set<Integer> visited, int depth) {
-        if (node == null || depth > 12 || sb.length() > MAX_LEN) return;
+        if (node == null || depth > 8 || sb.length() > MAX_LEN) return;
         int id = System.identityHashCode(node);
         if (visited.contains(id)) return;
         visited.add(id);
@@ -204,6 +234,7 @@ public class BillAssistService extends AccessibilityService {
         if (cs == null) return;
         String s = cs.toString().trim();
         if (s.isEmpty()) return;
+        if (sb.indexOf(s) >= 0) return;
         if (sb.length() + s.length() > MAX_LEN) return;
         sb.append(' ').append(s);
     }
