@@ -66,11 +66,20 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         db = new LedgerDb(this);
         requestNotifyPermissionIfNeeded();
-        QuickNotificationHelper.show(this);
         int cleaned = db.cleanFalseNotificationEntries();
         buildFrame();
         showDashboard();
+        QuickNotificationHelper.show(this);
         if (cleaned > 0) toast("已清理 " + cleaned + " 条误识别通知流水");
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (db != null) {
+            QuickNotificationHelper.show(this);
+            if (page != null && "看板".equals(currentTab)) showDashboard();
+        }
     }
 
     private void requestNotifyPermissionIfNeeded() {
@@ -91,10 +100,8 @@ public class MainActivity extends Activity {
         header.setBackground(gradient(PRIMARY, Color.rgb(109, 82, 232)));
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
-        TextView title = text("灵犀记账", 28, Color.WHITE, true);
-        header.addView(title);
-        TextView subtitle = text("自动识别 · 智能分类 · 3D 图表 · 本地隐私", 14, Color.argb(230, 255, 255, 255), false);
-        header.addView(subtitle);
+        header.addView(text("灵犀记账", 28, Color.WHITE, true));
+        header.addView(text("自动识别 · 智能分类 · 3D 图表 · 本地隐私", 14, Color.argb(230, 255, 255, 255), false));
 
         LinearLayout quick = new LinearLayout(this);
         quick.setOrientation(LinearLayout.HORIZONTAL);
@@ -160,17 +167,17 @@ public class MainActivity extends Activity {
         row2.addView(statCard("今日支出", money(totals.todayExpense), WARNING), new LinearLayout.LayoutParams(0, dp(90), 1));
         page.addView(row2);
 
-        addSectionTitle("近 7 日 3D 消费柱状图");
-        page.addView(text("按住柱状图左右/上下拖动，可旋转视角", 13, Color.rgb(110, 115, 135), false));
-        Bar3DView chart = new Bar3DView(this);
-        chart.setValues(db.lastSevenDays());
-        page.addView(cardWrap(chart, dp(250)));
+        addSectionTitle("近 7 日分类叠加砖块图");
+        page.addView(text("同一天不同分类按颜色堆叠，像砖块一样显示消费构成", 13, Color.rgb(110, 115, 135), false));
+        StackedBrickChartView stacked = new StackedBrickChartView(this);
+        stacked.setValues(db.lastSevenDayCategoryExpense());
+        page.addView(cardWrap(stacked, dp(245)));
 
         addSectionTitle("分类支出 3D 饼图");
-        page.addView(text("按住饼图左右拖动，可旋转；图例显示金额和百分比", 13, Color.rgb(110, 115, 135), false));
+        page.addView(text("饼图扇区直接显示金额和占比，左右拖动可旋转", 13, Color.rgb(110, 115, 135), false));
         Pie3DView pie = new Pie3DView(this);
         pie.setValues(db.categoryExpense(month));
-        page.addView(cardWrap(pie, dp(260)));
+        page.addView(cardWrap(pie, dp(330)));
 
         addSectionTitle("最近流水 · 点击查看详情");
         renderEntries(db.listEntries(8, "", "全部"));
@@ -207,6 +214,7 @@ public class MainActivity extends Activity {
             e.time = parseDate(date.getText().toString().trim());
             if ("其他".equals(e.category)) e.category = SmartParser.inferCategory(e.note, e.type);
             db.insert(e);
+            QuickNotificationHelper.show(this);
             toast("已保存");
             showDashboard();
         });
@@ -233,7 +241,7 @@ public class MainActivity extends Activity {
             resultBox.addView(text("识别结果：" + entries.size() + " 条", 17, PRIMARY_DARK, true));
             for (Entry e : entries) resultBox.addView(entryLine(e));
             Button saveAll = primaryButton("全部入账");
-            saveAll.setOnClickListener(x -> { for (Entry e : entries) db.insert(e); toast("已导入 " + entries.size() + " 条"); showDashboard(); });
+            saveAll.setOnClickListener(x -> { for (Entry e : entries) db.insert(e); QuickNotificationHelper.show(this); toast("已导入 " + entries.size() + " 条"); showDashboard(); });
             resultBox.addView(saveAll, new LinearLayout.LayoutParams(-1, dp(48)));
         });
         page.addView(parse, new LinearLayout.LayoutParams(-1, dp(48)));
@@ -252,11 +260,9 @@ public class MainActivity extends Activity {
         apply.setOnClickListener(v -> showRecords(search.getText().toString().trim(), type.getSelectedItem().toString()));
         Button export = secondaryButton("导出 CSV / 分享");
         export.setOnClickListener(v -> shareCsv());
-        Button importCsv = secondaryButton("粘贴 CSV 导入");
-        importCsv.setOnClickListener(v -> showCsvImportDialog());
         Button clean = secondaryButton("清理误识别通知");
         clean.setOnClickListener(v -> { int n = db.cleanFalseNotificationEntries(); toast("已清理 " + n + " 条"); showRecords("", "全部"); });
-        tools.addView(search); tools.addView(type); tools.addView(apply); tools.addView(export); tools.addView(importCsv); tools.addView(clean);
+        tools.addView(search); tools.addView(type); tools.addView(apply); tools.addView(export); tools.addView(clean);
         page.addView(tools);
         renderEntries(db.listEntries(200, query, typeFilter));
     }
@@ -301,15 +307,18 @@ public class MainActivity extends Activity {
         addSectionTitle("权限与自动识别");
         LinearLayout c = card();
         c.addView(text("建议同时开启通知权限、通知使用权和无障碍服务。", 15, PRIMARY_DARK, true));
-        c.addView(text("通知自动记账已加入支付类过滤，不会再记录 VPN、流量、手表等普通通知。", 13, Color.rgb(95, 100, 120), false));
+        c.addView(text("通知栏现在会显示今日收入、支出和结余。", 13, Color.rgb(95, 100, 120), false));
         Button a = primaryButton("开启无障碍服务");
         a.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         Button n = secondaryButton("开启通知使用权");
         n.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+        Button refresh = secondaryButton("刷新通知栏今日收支");
+        refresh.setOnClickListener(v -> { QuickNotificationHelper.show(this); toast("通知栏已刷新"); });
         Button clean = secondaryButton("清理误识别通知流水");
         clean.setOnClickListener(v -> toast("已清理 " + db.cleanFalseNotificationEntries() + " 条"));
         c.addView(a, new LinearLayout.LayoutParams(-1, dp(48)));
         c.addView(n, new LinearLayout.LayoutParams(-1, dp(48)));
+        c.addView(refresh, new LinearLayout.LayoutParams(-1, dp(48)));
         c.addView(clean, new LinearLayout.LayoutParams(-1, dp(48)));
         page.addView(c);
     }
@@ -333,7 +342,7 @@ public class MainActivity extends Activity {
             i.putExtra("id", e.id); i.putExtra("amount", e.amount); i.putExtra("type", e.type); i.putExtra("category", e.category); i.putExtra("account", e.account); i.putExtra("note", e.note); i.putExtra("source", e.source); i.putExtra("time", e.time);
             startActivity(i);
         });
-        c.setOnLongClickListener(v -> { new AlertDialog.Builder(this).setTitle("删除账目").setMessage("确定删除这条记录吗？").setPositiveButton("删除", (d, w) -> { db.delete(e.id); showRecords("", "全部"); }).setNegativeButton("取消", null).show(); return true; });
+        c.setOnLongClickListener(v -> { new AlertDialog.Builder(this).setTitle("删除账目").setMessage("确定删除这条记录吗？").setPositiveButton("删除", (d, w) -> { db.delete(e.id); QuickNotificationHelper.show(this); showRecords("", "全部"); }).setNegativeButton("取消", null).show(); return true; });
         return c;
     }
 
@@ -353,17 +362,6 @@ public class MainActivity extends Activity {
         send.putExtra(Intent.EXTRA_SUBJECT, "灵犀记账CSV导出");
         send.putExtra(Intent.EXTRA_TEXT, csv);
         startActivity(Intent.createChooser(send, "导出/分享 CSV"));
-    }
-
-    private void showCsvImportDialog() {
-        EditText edit = input("粘贴 CSV：date,type,category,account,amount,note,source", false);
-        edit.setMinLines(8);
-        new AlertDialog.Builder(this).setTitle("CSV 导入").setView(edit).setPositiveButton("导入", (d, w) -> {
-            List<Entry> list = Csv.fromCsv(edit.getText().toString());
-            for (Entry e : list) db.insert(e);
-            toast("已导入 " + list.size() + " 条");
-            showRecords("", "全部");
-        }).setNegativeButton("取消", null).show();
     }
 
     private LinearLayout card() {
@@ -398,7 +396,7 @@ public class MainActivity extends Activity {
     private Spinner spinner(String[] items) { Spinner s = new Spinner(this); s.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, items)); s.setBackground(glassRound(Color.argb(175, 248, 250, 255), 16)); return s; }
     private Button primaryButton(String text) { return pill(text, Color.argb(225, 91, 95, 239), Color.WHITE); }
     private Button secondaryButton(String text) { return pill(text, Color.argb(180, 255, 255, 255), PRIMARY); }
-    private Button pill(String text, int bg, int fg) { Button b = new Button(this); b.setAllCaps(false); b.setText(text); b.setTextSize(14); b.setTextColor(fg); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setBackground(glassRound(bg, 18)); b.setElevation(dp(3)); return b; }
+    private Button pill(String text, int bg, int fg) { Button b = new Button(this); b.setAllCaps(false); b.setText(text); b.setTextSize(14); b.setTextColor(fg); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setBackground(glassRound(bg, 18)); b.setElevation(dp(3)); b.setOnTouchListener((v, e) -> { if (e.getAction() == MotionEvent.ACTION_DOWN) v.animate().scaleX(0.95f).scaleY(0.95f).setDuration(70).start(); else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) v.animate().scaleX(1.03f).scaleY(1.03f).setDuration(80).withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(90).start()).start(); return false; }); return b; }
     private TextView text(String s, int sp, int color, boolean bold) { TextView t = new TextView(this); t.setText(s); t.setTextSize(sp); t.setTextColor(color); if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); t.setLineSpacing(dp(2), 1f); return t; }
     private LinearLayout row() { LinearLayout r = new LinearLayout(this); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL); return r; }
     private void addGap(LinearLayout parent, int width) { View v = new View(this); parent.addView(v, new LinearLayout.LayoutParams(dp(width), 1)); }
@@ -438,16 +436,25 @@ public class MainActivity extends Activity {
         private Entry readEntry(Cursor c) { Entry e = new Entry(); e.id = c.getLong(c.getColumnIndexOrThrow("id")); e.amount = c.getDouble(c.getColumnIndexOrThrow("amount")); e.type = c.getString(c.getColumnIndexOrThrow("type")); e.category = c.getString(c.getColumnIndexOrThrow("category")); e.account = c.getString(c.getColumnIndexOrThrow("account")); e.note = c.getString(c.getColumnIndexOrThrow("note")); e.source = c.getString(c.getColumnIndexOrThrow("source")); e.time = c.getLong(c.getColumnIndexOrThrow("time")); return e; }
         public Totals monthTotals(String month) { Totals t = new Totals(); String today = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date()); for (Entry e : listEntries(10000, "", "全部")) { String m = new SimpleDateFormat("yyyy-MM", Locale.CHINA).format(new Date(e.time)); if (!month.equals(m)) continue; if ("收入".equals(e.type)) t.income += e.amount; else t.expense += e.amount; String d = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date(e.time)); if (today.equals(d) && "支出".equals(e.type)) t.todayExpense += e.amount; } return t; }
         public Map<String, Double> categoryExpense(String month) { Map<String, Double> map = new LinkedHashMap<>(); SimpleDateFormat f = new SimpleDateFormat("yyyy-MM", Locale.CHINA); for (Entry e : listEntries(10000, "", "支出")) { if (!month.equals(f.format(new Date(e.time)))) continue; map.put(e.category, map.containsKey(e.category) ? map.get(e.category) + e.amount : e.amount); } return map; }
-        public Map<String, Double> lastSevenDays() { Map<String, Double> map = new LinkedHashMap<>(); Calendar c = Calendar.getInstance(); SimpleDateFormat f = new SimpleDateFormat("MM-dd", Locale.CHINA); for (int i = 6; i >= 0; i--) { Calendar x = (Calendar) c.clone(); x.add(Calendar.DATE, -i); map.put(f.format(x.getTime()), 0d); } for (Entry e : listEntries(10000, "", "支出")) { String d = f.format(new Date(e.time)); if (map.containsKey(d)) map.put(d, map.get(d) + e.amount); } return map; }
+        public Map<String, Map<String, Double>> lastSevenDayCategoryExpense() { Map<String, Map<String, Double>> result = new LinkedHashMap<>(); Calendar cal = Calendar.getInstance(); SimpleDateFormat dayFmt = new SimpleDateFormat("MM-dd", Locale.CHINA); SimpleDateFormat fullFmt = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA); List<String> days = new ArrayList<>(); for (int i = 6; i >= 0; i--) { Calendar x = (Calendar) cal.clone(); x.add(Calendar.DATE, -i); String key = dayFmt.format(x.getTime()); result.put(key, new LinkedHashMap<>()); days.add(fullFmt.format(x.getTime())); } for (Entry e : listEntries(10000, "", "支出")) { String full = fullFmt.format(new Date(e.time)); int idx = days.indexOf(full); if (idx < 0) continue; String key = new ArrayList<>(result.keySet()).get(idx); Map<String, Double> m = result.get(key); m.put(e.category, m.containsKey(e.category) ? m.get(e.category) + e.amount : e.amount); } return result; }
         public void setBudget(String month, String category, double amount) { ContentValues v = new ContentValues(); v.put("month", month); v.put("category", category); v.put("amount", amount); getWritableDatabase().insertWithOnConflict("budgets", null, v, SQLiteDatabase.CONFLICT_REPLACE); }
         public List<Budget> listBudgets(String month) { List<Budget> list = new ArrayList<>(); Cursor c = getReadableDatabase().query("budgets", null, "month=?", new String[]{month}, null, null, "category ASC"); while (c.moveToNext()) { Budget b = new Budget(); b.category = c.getString(c.getColumnIndexOrThrow("category")); b.amount = c.getDouble(c.getColumnIndexOrThrow("amount")); list.add(b); } c.close(); return list; }}
 
-    public static class Csv { public static String toCsv(List<Entry> entries) { StringBuilder sb = new StringBuilder("date,type,category,account,amount,note,source\n"); SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA); for (Entry e : entries) sb.append(f.format(new Date(e.time))).append(',').append(e.type).append(',').append(e.category).append(',').append(e.account).append(',').append(e.amount).append(',').append('"').append(e.note == null ? "" : e.note.replace("\"", "\"\"")).append('"').append(',').append('"').append(e.source == null ? "" : e.source.replace("\"", "\"\"")).append('"').append('\n'); return sb.toString(); } public static List<Entry> fromCsv(String csv) { List<Entry> list = new ArrayList<>(); if (csv == null) return list; SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA); for (String line : csv.split("\\n")) { if (line.toLowerCase(Locale.ROOT).startsWith("date,") || line.trim().isEmpty()) continue; String[] p = line.split(",", -1); if (p.length < 5) continue; Entry e = new Entry(); try { e.time = f.parse(p[0].trim()).getTime(); } catch (Exception ignored) {} e.type = p[1].trim().isEmpty() ? "支出" : p[1].trim(); e.category = p[2].trim().isEmpty() ? "其他" : p[2].trim(); e.account = p[3].trim().isEmpty() ? "其他" : p[3].trim(); e.amount = SmartParser.toDouble(p[4].trim()); e.note = p.length > 5 ? p[5].replace("\"", "") : ""; e.source = "CSV导入"; if (e.amount > 0) list.add(e); } return list; }}
+    public static class Csv { public static String toCsv(List<Entry> entries) { StringBuilder sb = new StringBuilder("date,type,category,account,amount,note,source\n"); SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA); for (Entry e : entries) sb.append(f.format(new Date(e.time))).append(',').append(e.type).append(',').append(e.category).append(',').append(e.account).append(',').append(e.amount).append(',').append('"').append(e.note == null ? "" : e.note.replace("\"", "\"\"")).append('"').append(',').append('"').append(e.source == null ? "" : e.source.replace("\"", "\"\"")).append('"').append('\n'); return sb.toString(); }}
 
-    public static class Bar3DView extends View { private Map<String, Double> values = new LinkedHashMap<>(); private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); private float rotX = 0.45f, rotY = 0.7f, lastX, lastY; private final int[] colors = {PRIMARY, ACCENT, WARNING, DANGER, Color.rgb(118, 90, 224), Color.rgb(56, 180, 230), Color.rgb(255, 128, 128)}; public Bar3DView(Context c) { super(c); setPadding(8,8,8,8); } public void setValues(Map<String, Double> v) { values = v == null ? new LinkedHashMap<>() : v; invalidate(); } @Override public boolean onTouchEvent(MotionEvent e) { if (e.getAction()==MotionEvent.ACTION_DOWN) { lastX=e.getX(); lastY=e.getY(); return true; } if (e.getAction()==MotionEvent.ACTION_MOVE) { rotY += (e.getX()-lastX)/180f; rotX += (e.getY()-lastY)/220f; rotX=Math.max(-0.6f, Math.min(0.9f, rotX)); lastX=e.getX(); lastY=e.getY(); invalidate(); return true; } return true; } @Override protected void onDraw(Canvas c) { super.onDraw(c); p.setTextSize(24); if (values.isEmpty()) { p.setColor(Color.rgb(105,110,130)); p.setTextAlign(Paint.Align.CENTER); c.drawText("暂无数据", getWidth()/2f, getHeight()/2f, p); return; } double max = 1; for (double v: values.values()) max = Math.max(max, v); int n = values.size(); float gap = 16; float w = (getWidth()-gap*(n+1))/Math.max(1,n); float base = getHeight()-46; float depthX = 18 + 28*rotY; float depthY = -18 - 25*rotX; int i=0; p.setTextAlign(Paint.Align.CENTER); for (Map.Entry<String,Double> e: values.entrySet()) { float left = gap + i*(w+gap); float h = (float)(e.getValue()/max*(getHeight()-90)); int color = colors[i%colors.length]; drawBar(c,left,base,w,h,depthX,depthY,color); p.setColor(Color.rgb(105,110,130)); p.setTextSize(21); c.drawText(e.getKey(), left+w/2, getHeight()-14, p); i++; }} private void drawBar(Canvas c,float x,float base,float w,float h,float dx,float dy,int color){ float top=base-h; p.setColor(color); RectF front=new RectF(x,top,x+w,base); c.drawRoundRect(front,8,8,p); Path topP=new Path(); topP.moveTo(x,top); topP.lineTo(x+dx,top+dy); topP.lineTo(x+w+dx,top+dy); topP.lineTo(x+w,top); topP.close(); p.setColor(light(color)); c.drawPath(topP,p); Path side=new Path(); side.moveTo(x+w,top); side.lineTo(x+w+dx,top+dy); side.lineTo(x+w+dx,base+dy); side.lineTo(x+w,base); side.close(); p.setColor(dark(color)); c.drawPath(side,p); } private int light(int c){ return Color.rgb(Math.min(255,(int)(Color.red(c)*1.25)),Math.min(255,(int)(Color.green(c)*1.25)),Math.min(255,(int)(Color.blue(c)*1.25))); } private int dark(int c){ return Color.rgb((int)(Color.red(c)*0.7),(int)(Color.green(c)*0.7),(int)(Color.blue(c)*0.7)); }}
+    public static class StackedBrickChartView extends View { private Map<String, Map<String, Double>> values = new LinkedHashMap<>(); private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); private final int[] colors = {PRIMARY, ACCENT, WARNING, DANGER, Color.rgb(118,90,224), Color.rgb(56,180,230), Color.rgb(255,128,128), Color.rgb(80,200,130), Color.rgb(255,155,60), Color.rgb(90,130,255), Color.rgb(160,110,60), Color.rgb(120,120,145)}; public StackedBrickChartView(Context c) { super(c); } public void setValues(Map<String, Map<String, Double>> v) { values = v == null ? new LinkedHashMap<>() : v; invalidate(); }
+        @Override protected void onDraw(Canvas c) { super.onDraw(c); if (values.isEmpty()) { drawEmpty(c); return; } double max = 1; for (Map<String, Double> m : values.values()) { double sum = 0; for (double v : m.values()) sum += v; max = Math.max(max, sum); } int n = values.size(); float gap = 18; float w = (getWidth() - gap * (n + 1)) / Math.max(1, n); float base = getHeight() - 42; float topLimit = 30; int day = 0; p.setTextAlign(Paint.Align.CENTER); for (Map.Entry<String, Map<String, Double>> dayEntry : values.entrySet()) { float x = gap + day * (w + gap); float y = base; int layer = 0; for (Map.Entry<String, Double> cat : dayEntry.getValue().entrySet()) { float h = (float) (cat.getValue() / max * (base - topLimit)); if (h < 5 && cat.getValue() > 0) h = 5; int color = colorForCategory(cat.getKey(), layer); drawBrick(c, x, y - h, w, h, color); y -= h; layer++; } p.setColor(Color.rgb(105,110,130)); p.setTextSize(21); c.drawText(dayEntry.getKey(), x + w / 2, getHeight() - 12, p); day++; } drawLegend(c); }
+        private void drawBrick(Canvas c, float x, float y, float w, float h, int color) { float dx = 10, dy = -7; p.setColor(color); c.drawRoundRect(new RectF(x, y, x + w, y + h), 6, 6, p); Path top = new Path(); top.moveTo(x, y); top.lineTo(x + dx, y + dy); top.lineTo(x + w + dx, y + dy); top.lineTo(x + w, y); top.close(); p.setColor(light(color)); c.drawPath(top, p); Path side = new Path(); side.moveTo(x + w, y); side.lineTo(x + w + dx, y + dy); side.lineTo(x + w + dx, y + h + dy); side.lineTo(x + w, y + h); side.close(); p.setColor(dark(color)); c.drawPath(side, p); }
+        private void drawLegend(Canvas c) { p.setTextAlign(Paint.Align.LEFT); p.setTextSize(20); float x = 12, y = 22; int shown = 0; for (String cat : CATEGORIES) { if (!hasCategory(cat)) continue; int color = colorForCategory(cat, shown); p.setColor(color); c.drawRoundRect(x, y - 14, x + 18, y + 4, 6, 6, p); p.setColor(PRIMARY_DARK); c.drawText(iconForCategory(cat) + cat, x + 24, y, p); x += 96; shown++; if (x > getWidth() - 95) { x = 12; y += 26; } if (shown >= 6) break; } }
+        private boolean hasCategory(String cat) { for (Map<String, Double> m : values.values()) if (m.containsKey(cat)) return true; return false; }
+        private int colorForCategory(String cat, int fallback) { for (int i = 0; i < CATEGORIES.length; i++) if (CATEGORIES[i].equals(cat)) return colors[i % colors.length]; return colors[fallback % colors.length]; }
+        private int light(int c){ return Color.rgb(Math.min(255,(int)(Color.red(c)*1.22)),Math.min(255,(int)(Color.green(c)*1.22)),Math.min(255,(int)(Color.blue(c)*1.22))); } private int dark(int c){ return Color.rgb((int)(Color.red(c)*0.67),(int)(Color.green(c)*0.67),(int)(Color.blue(c)*0.67)); } private void drawEmpty(Canvas c) { p.setColor(Color.rgb(105,110,130)); p.setTextAlign(Paint.Align.CENTER); p.setTextSize(26); c.drawText("暂无数据", getWidth()/2f, getHeight()/2f, p); }}
 
-    public static class Pie3DView extends View { private Map<String, Double> values = new LinkedHashMap<>(); private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); private float startAngle = -80f, lastX; private final int[] colors = {PRIMARY, ACCENT, WARNING, DANGER, Color.rgb(118,90,224), Color.rgb(56,180,230), Color.rgb(255,128,128), Color.rgb(80,200,130)}; public Pie3DView(Context c){super(c);} public void setValues(Map<String,Double> v){values=v==null?new LinkedHashMap<>():v;invalidate();} @Override public boolean onTouchEvent(MotionEvent e){ if(e.getAction()==MotionEvent.ACTION_DOWN){lastX=e.getX();return true;} if(e.getAction()==MotionEvent.ACTION_MOVE){startAngle += (e.getX()-lastX)/2.2f; lastX=e.getX(); invalidate(); return true;} return true;} @Override protected void onDraw(Canvas c){ if(values.isEmpty()){p.setColor(Color.rgb(105,110,130));p.setTextAlign(Paint.Align.CENTER);p.setTextSize(26);c.drawText("暂无数据",getWidth()/2f,getHeight()/2f,p);return;} double total=0; for(double v:values.values()) total+=v; float cx=getWidth()*0.32f; float cy=getHeight()*0.43f; float rx=Math.min(getWidth()*0.25f, getHeight()*0.32f); float ry=rx*0.62f; RectF oval=new RectF(cx-rx,cy-ry,cx+rx,cy+ry); for(int layer=14; layer>=1; layer--){ float y=layer*2.2f; float a=startAngle; int i=0; for(Map.Entry<String,Double> e:values.entrySet()){float sweep=(float)(e.getValue()/total*360f); p.setColor(dark(colors[i%colors.length])); RectF o=new RectF(oval.left,oval.top+y,oval.right,oval.bottom+y); c.drawArc(o,a,sweep,true,p); a+=sweep;i++;}} float a=startAngle; int i=0; for(Map.Entry<String,Double> e:values.entrySet()){float sweep=(float)(e.getValue()/total*360f); p.setColor(colors[i%colors.length]); c.drawArc(oval,a,sweep,true,p); a+=sweep;i++;} p.setTextAlign(Paint.Align.LEFT);p.setTextSize(22);float y=26;i=0; for(Map.Entry<String,Double> e:values.entrySet()){ double percent=e.getValue()/total*100d; p.setColor(colors[i%colors.length]); c.drawRoundRect(getWidth()*0.60f,y-17,getWidth()*0.60f+22,y+5,8,8,p); p.setColor(PRIMARY_DARK); c.drawText(iconForCategory(e.getKey())+" "+e.getKey(),getWidth()*0.60f+30,y,p); p.setTextSize(19); p.setColor(Color.rgb(95,100,120)); c.drawText("¥"+String.format(Locale.CHINA,"%.2f",e.getValue())+"  "+String.format(Locale.CHINA,"%.1f%%",percent),getWidth()*0.60f+30,y+25,p); p.setTextSize(22); y+=58; i++; if(y>getHeight()-36)break;} } private int dark(int c){return Color.rgb((int)(Color.red(c)*0.62),(int)(Color.green(c)*0.62),(int)(Color.blue(c)*0.62));}}
+    public static class Pie3DView extends View { private Map<String, Double> values = new LinkedHashMap<>(); private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); private float startAngle = -80f, lastX; private final int[] colors = {PRIMARY, ACCENT, WARNING, DANGER, Color.rgb(118,90,224), Color.rgb(56,180,230), Color.rgb(255,128,128), Color.rgb(80,200,130), Color.rgb(255,155,60), Color.rgb(90,130,255), Color.rgb(160,110,60), Color.rgb(120,120,145)}; public Pie3DView(Context c){super(c);} public void setValues(Map<String,Double> v){values=v==null?new LinkedHashMap<>():v;invalidate();} @Override public boolean onTouchEvent(MotionEvent e){ if(e.getAction()==MotionEvent.ACTION_DOWN){lastX=e.getX();return true;} if(e.getAction()==MotionEvent.ACTION_MOVE){startAngle += (e.getX()-lastX)/2.2f; lastX=e.getX(); invalidate(); return true;} return true;} @Override protected void onDraw(Canvas c){ if(values.isEmpty()){p.setColor(Color.rgb(105,110,130));p.setTextAlign(Paint.Align.CENTER);p.setTextSize(28);c.drawText("暂无数据",getWidth()/2f,getHeight()/2f,p);return;} double total=0; for(double v:values.values()) total+=v; float cx=getWidth()*0.32f; float cy=getHeight()*0.42f; float rx=Math.min(getWidth()*0.27f, getHeight()*0.31f); float ry=rx*0.62f; RectF oval=new RectF(cx-rx,cy-ry,cx+rx,cy+ry); for(int layer=16; layer>=1; layer--){ float y=layer*2.4f; float a=startAngle; int i=0; for(Map.Entry<String,Double> e:values.entrySet()){float sweep=(float)(e.getValue()/total*360f); p.setColor(dark(colors[i%colors.length])); RectF o=new RectF(oval.left,oval.top+y,oval.right,oval.bottom+y); c.drawArc(o,a,sweep,true,p); a+=sweep;i++;}} float a=startAngle; int i=0; for(Map.Entry<String,Double> e:values.entrySet()){float sweep=(float)(e.getValue()/total*360f); int color=colors[i%colors.length]; p.setColor(color); c.drawArc(oval,a,sweep,true,p); drawSliceText(c, oval, a, sweep, e.getKey(), e.getValue(), total); a+=sweep;i++;} drawLargeLegend(c,total); }
+        private void drawSliceText(Canvas c, RectF oval, float start, float sweep, String cat, double val, double total) { if (sweep < 26) return; double mid = Math.toRadians(start + sweep / 2f); float x = oval.centerX() + (float)Math.cos(mid) * oval.width() * 0.20f; float y = oval.centerY() + (float)Math.sin(mid) * oval.height() * 0.20f; p.setTextAlign(Paint.Align.CENTER); p.setColor(Color.WHITE); p.setTypeface(Typeface.DEFAULT_BOLD); p.setTextSize(20); c.drawText(iconForCategory(cat), x, y - 16, p); c.drawText("¥" + String.format(Locale.CHINA, "%.0f", val), x, y + 6, p); c.drawText(String.format(Locale.CHINA, "%.0f%%", val / total * 100d), x, y + 28, p); p.setTypeface(Typeface.DEFAULT); }
+        private void drawLargeLegend(Canvas c, double total) { p.setTextAlign(Paint.Align.LEFT); float x = getWidth()*0.61f; float y = 38; int i = 0; for(Map.Entry<String,Double> e:values.entrySet()){ double percent=e.getValue()/total*100d; p.setColor(colors[i%colors.length]); c.drawRoundRect(x, y - 20, x + 24, y + 4, 8, 8, p); p.setColor(PRIMARY_DARK); p.setTypeface(Typeface.DEFAULT_BOLD); p.setTextSize(25); c.drawText(iconForCategory(e.getKey()) + " " + e.getKey(), x + 34, y, p); p.setTypeface(Typeface.DEFAULT); p.setTextSize(22); p.setColor(Color.rgb(80, 86, 105)); c.drawText("¥" + String.format(Locale.CHINA,"%.2f", e.getValue()) + "  " + String.format(Locale.CHINA,"%.1f%%", percent), x + 34, y + 30, p); y += 68; i++; if (y > getHeight() - 26) break; } } private int dark(int c){return Color.rgb((int)(Color.red(c)*0.62),(int)(Color.green(c)*0.62),(int)(Color.blue(c)*0.62));}}
+
     public static class ProgressView extends View { private float progress; private int color = ACCENT; private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); public ProgressView(Context c){super(c);} public void setProgress(float progress,int color){this.progress=progress;this.color=color;invalidate();} @Override protected void onDraw(Canvas c){p.setColor(Color.rgb(230,235,245));c.drawRoundRect(0,0,getWidth(),getHeight(),getHeight()/2f,getHeight()/2f,p);p.setColor(color);c.drawRoundRect(0,0,getWidth()*progress,getHeight(),getHeight()/2f,getHeight()/2f,p);}}
 
-    public static class AutoLedgerNotificationService extends android.service.notification.NotificationListenerService { @Override public void onListenerConnected(){ super.onListenerConnected(); QuickNotificationHelper.show(this); } @Override public void onNotificationPosted(android.service.notification.StatusBarNotification sbn){ if(sbn==null || sbn.getNotification()==null || sbn.getNotification().extras==null)return; String pkg=sbn.getPackageName()==null?"":sbn.getPackageName().toLowerCase(Locale.ROOT); CharSequence title=sbn.getNotification().extras.getCharSequence("android.title"); CharSequence text=sbn.getNotification().extras.getCharSequence("android.text"); CharSequence big=sbn.getNotification().extras.getCharSequence("android.bigText"); String raw=(title==null?"":title.toString())+" "+(text==null?"":text.toString())+" "+(big==null?"":big.toString()); if(!isPayPackage(pkg) || !looksLikePayment(raw)) return; Entry e=SmartParser.parseOne(raw); if(e==null)return; e.source="通知自动记账"; if("其他".equals(e.account)) e.account=accountFromPackage(pkg); if("其他".equals(e.category)) e.category=SmartParser.inferCategory(raw,e.type); new LedgerDb(this).insert(e); } private boolean isPayPackage(String p){ return p.contains("tencent.mm") || p.contains("alipay") || p.contains("unionpay") || p.contains("bank") || p.contains("cmb") || p.contains("icbc") || p.contains("ccb") || p.contains("abc") || p.contains("boc"); } private boolean looksLikePayment(String s){ if(s==null)return false; boolean money=s.contains("¥")||s.contains("元")||s.contains("金额")||s.matches(".*(?:支付|付款|消费|收款|到账|退款|转账|红包).*[0-9]+(?:\\.[0-9]{1,2})?.*"); boolean word=s.contains("支付")||s.contains("付款")||s.contains("消费")||s.contains("收款")||s.contains("到账")||s.contains("退款")||s.contains("转账")||s.contains("红包")||s.contains("订单"); boolean bad=s.contains("Bytes/s")||s.contains("KiB/s")||s.contains("VPN")||s.contains("HUAWEI WATCH")||s.contains("已连接")||s.contains("US -"); return money && word && !bad; } private String accountFromPackage(String p){ if(p.contains("tencent.mm"))return "微信"; if(p.contains("alipay"))return "支付宝"; return "银行卡"; }}
+    public static class AutoLedgerNotificationService extends android.service.notification.NotificationListenerService { @Override public void onListenerConnected(){ super.onListenerConnected(); QuickNotificationHelper.show(this); } @Override public void onNotificationPosted(android.service.notification.StatusBarNotification sbn){ if(sbn==null || sbn.getNotification()==null || sbn.getNotification().extras==null)return; String pkg=sbn.getPackageName()==null?"":sbn.getPackageName().toLowerCase(Locale.ROOT); CharSequence title=sbn.getNotification().extras.getCharSequence("android.title"); CharSequence text=sbn.getNotification().extras.getCharSequence("android.text"); CharSequence big=sbn.getNotification().extras.getCharSequence("android.bigText"); String raw=(title==null?"":title.toString())+" "+(text==null?"":text.toString())+" "+(big==null?"":big.toString()); if(!isPayPackage(pkg) || !looksLikePayment(raw)) return; Entry e=SmartParser.parseOne(raw); if(e==null)return; e.source="通知自动记账"; if("其他".equals(e.account)) e.account=accountFromPackage(pkg); if("其他".equals(e.category)) e.category=SmartParser.inferCategory(raw,e.type); new LedgerDb(this).insert(e); QuickNotificationHelper.show(this); } private boolean isPayPackage(String p){ return p.contains("tencent.mm") || p.contains("alipay") || p.contains("unionpay") || p.contains("bank") || p.contains("cmb") || p.contains("icbc") || p.contains("ccb") || p.contains("abc") || p.contains("boc"); } private boolean looksLikePayment(String s){ if(s==null)return false; boolean money=s.contains("¥")||s.contains("元")||s.contains("金额")||s.matches(".*(?:支付|付款|消费|收款|到账|退款|转账|红包).*[0-9]+(?:\\.[0-9]{1,2})?.*"); boolean word=s.contains("支付")||s.contains("付款")||s.contains("消费")||s.contains("收款")||s.contains("到账")||s.contains("退款")||s.contains("转账")||s.contains("红包")||s.contains("订单"); boolean bad=s.contains("Bytes/s")||s.contains("KiB/s")||s.contains("VPN")||s.contains("HUAWEI WATCH")||s.contains("已连接")||s.contains("US -"); return money && word && !bad; } private String accountFromPackage(String p){ if(p.contains("tencent.mm"))return "微信"; if(p.contains("alipay"))return "支付宝"; return "银行卡"; }}
 }
