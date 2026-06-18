@@ -108,6 +108,9 @@ public class QuickEntryActivity extends Activity {
         String raw = getIntent().getStringExtra("raw_text");
         String forcedType = getIntent().getStringExtra("forced_type");
         String forcedAccount = getIntent().getStringExtra("forced_account");
+        String forcedCategory = getIntent().getStringExtra("forced_category");
+        String forcedNote = getIntent().getStringExtra("forced_note");
+        double forcedAmount = getIntent().getDoubleExtra("forced_amount", 0D);
         if (raw == null) raw = "";
         rawPreview.setText(raw.length() > 0 ? raw : "通知栏快捷记账：请手动填写金额和备注。 ");
 
@@ -115,19 +118,22 @@ public class QuickEntryActivity extends Activity {
         if (parsed == null) parsed = new MainActivity.Entry();
         if (forcedType != null && forcedType.length() > 0) parsed.type = forcedType;
         if (forcedAccount != null && forcedAccount.length() > 0) parsed.account = forcedAccount;
+        if (forcedCategory != null && forcedCategory.length() > 0) parsed.category = forcedCategory;
+        if (forcedAmount > 0) parsed.amount = forcedAmount;
 
         typeSpinner.setSelection(indexOf(new String[]{"支出", "收入"}, parsed.type));
         categorySpinner.setSelection(indexOf(CATEGORIES, parsed.category));
         accountSpinner.setSelection(indexOf(ACCOUNTS, parsed.account));
         if (parsed.amount > 0) amountInput.setText(String.format(Locale.CHINA, "%.2f", parsed.amount));
-        noteInput.setText(makeBetterNote(raw, parsed.note));
+        noteInput.setText(forcedNote != null && forcedNote.trim().length() > 0 ? forcedNote.trim() : makeBetterNote(raw, parsed.note));
         dateInput.setText(new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date(parsed.time > 0 ? parsed.time : System.currentTimeMillis())));
     }
 
     private String makeBetterNote(String raw, String fallback) {
         if (raw == null) raw = "";
+        if (raw.contains("红包")) return "微信红包";
         if (raw.contains("扫码") || raw.contains("二维码") || raw.contains("收款方备注")) return "微信扫码付款";
-        if (raw.contains("转账")) return "微信转账";
+        if (raw.contains("转账") || raw.contains("确认收款")) return "微信转账";
         if (raw.contains("支付")) return "支付消费";
         return fallback == null || fallback.trim().isEmpty() ? "快捷记账" : fallback.trim();
     }
