@@ -3,10 +3,20 @@ package com.liyuhui.smartledger;
 import android.accessibilityservice.AccessibilityService;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import java.util.HashSet;
 import java.util.List;
@@ -22,6 +32,12 @@ public class BillAssistService extends AccessibilityService {
     private static final long EVENT_THROTTLE_MS = 260L;
     private long lastEventAt = 0L;
     private String lastShortText = "";
+    private WindowManager overlayManager;
+    private View overlayView;
+    private float overlayDownX;
+    private float overlayDownY;
+    private int overlayStartX;
+    private int overlayStartY;
 
     @Override
     protected void onServiceConnected() {
@@ -76,6 +92,12 @@ public class BillAssistService extends AccessibilityService {
 
     @Override
     public void onInterrupt() { }
+
+    @Override
+    public void onDestroy() {
+        removeGlassOverlay();
+        super.onDestroy();
+    }
 
     private boolean hasValidPending(String pkg) {
         SharedPreferences sp = getSharedPreferences("bill_assist_pending", MODE_PRIVATE);
@@ -236,7 +258,19 @@ public class BillAssistService extends AccessibilityService {
         double amount = forcedAmount > 0 ? forcedAmount : (e == null ? 0D : e.amount);
 
         QuickNotificationHelper.showBillReview(this, raw, account, type, source, amount, note, category);
+        showGlassOverlay(raw, account, type, source, amount, note, category);
 
+        Intent i = buildQuickEntryIntent(raw, account, type, source, amount, note, category);
+        try {
+            startActivity(i);
+        } catch (Exception ignored) {
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                try { startActivity(i); } catch (Exception ignoredAgain) { }
+            }, 300);
+        }
+    }
+
+    private Intent buildQuickEntryIntent(String raw, String account, String type, String source, double amount, String note, String category) {
         Intent i = new Intent(this, QuickEntryActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         i.putExtra("raw_text", raw);
@@ -246,13 +280,125 @@ public class BillAssistService extends AccessibilityService {
         if (amount > 0) i.putExtra("forced_amount", amount);
         i.putExtra("forced_note", note);
         i.putExtra("forced_category", category);
+        return i;
+    }
+
+    private void showGlassOverlay(String raw, String account, String type, String source, double amount, String note, String category) {
+        removeGlassOverlay();
+        overlayManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        if (overlayManager == null) return;
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(18), dp(16), dp(18), dp(16));
+        card.setBackground(glassBg(Color.argb(188, 255, 255, 255), dp(28)));
+        card.setElevation(dp(12));
+
+        TextView title = overlayText("识别到微信转账", 17, Color.rgb(25, 28, 45), true);
+        TextView amountView = overlayText("¥" + String.format(Locale.CHINA, "%.2f", amount), 30, Color.rgb(20, 120, 72), true);
+        TextView noteView = overlayText(note == null || note.trim().isEmpty() ? "微信转账" : note.trim(), 14, Color.rgb(80, 84, 105), false);
+        TextView tip = overlayText("点确认后进入记账页；也可在通知栏确认", 12, Color.rgb(115, 120, 140), false);
+        card.addView(title);
+        card.addView(amountView);
+        card.addView(noteView);
+        card.addView(tip);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        actions.setPadding(0, dp(10), 0, 0);
+        Button cancel = overlayButton("稍后", Color.argb(90, 255, 255, 255), Color.rgb(70, 74, 95));
+        Button confirm = overlayButton("确认记账", Color.rgb(52, 199, 89), Color.WHITE);
+        cancel.setOnClickListener(v -> removeGlassOverlay());
+        confirm.setOnClickListener(v -> {
+            removeGlassOverlay();
+            Intent intent = buildQuickEntryIntent(raw, account, type, source, amount, note, category);
+            try { startActivity(intent); } catch (Exception ignored) { }
+        });
+        actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(46), 1));
+        TextView gap = new TextView(this);
+        actions.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
+        actions.addView(confirm, new LinearLayout.LayoutParams(0, dp(46), 1));
+        card.addView(actions);
+
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                dp(340),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                android.graphics.PixelFormat.TRANSLUCENT
+        );
+        lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        lp.y = dp(80);
+
+        card.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                overlayDownX = event.getRawX();
+                overlayDownY = event.getRawY();
+                overlayStartX = lp.x;
+                overlayStartY = lp.y;
+                return false;
+            }
+            if (event.getAction() == MotionEvent.ACTION_MOVE) {
+                lp.x = overlayStartX + (int) (event.getRawX() - overlayDownX);
+                lp.y = Math.max(0, overlayStartY + (int) (event.getRawY() - overlayDownY));
+                try { overlayManager.updateViewLayout(card, lp); } catch (Exception ignored) { }
+                return true;
+            }
+            return false;
+        });
+
+        overlayView = card;
         try {
-            startActivity(i);
+            overlayManager.addView(overlayView, lp);
+            new Handler(Looper.getMainLooper()).postDelayed(this::removeGlassOverlay, 18000);
         } catch (Exception ignored) {
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                try { startActivity(i); } catch (Exception ignoredAgain) { }
-            }, 300);
+            overlayView = null;
         }
+    }
+
+    private void removeGlassOverlay() {
+        if (overlayManager != null && overlayView != null) {
+            try { overlayManager.removeView(overlayView); } catch (Exception ignored) { }
+        }
+        overlayView = null;
+    }
+
+    private TextView overlayText(String value, int sp, int color, boolean bold) {
+        TextView t = new TextView(this);
+        t.setText(value);
+        t.setTextSize(sp);
+        t.setTextColor(color);
+        t.setGravity(Gravity.CENTER_HORIZONTAL);
+        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return t;
+    }
+
+    private Button overlayButton(String value, int bg, int fg) {
+        Button b = new Button(this);
+        b.setAllCaps(false);
+        b.setText(value);
+        b.setTextSize(14);
+        b.setTextColor(fg);
+        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        b.setBackground(glassBg(bg, dp(22)));
+        b.setOnTouchListener((v, e) -> {
+            if (e.getAction() == MotionEvent.ACTION_DOWN) v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70).start();
+            else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(80).withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(90).start()).start();
+            return false;
+        });
+        return b;
+    }
+
+    private GradientDrawable glassBg(int color, int radius) {
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{Color.argb(230, 255, 255, 255), color, Color.argb(90, 255, 255, 255)});
+        g.setCornerRadius(radius);
+        g.setStroke(dp(1), Color.argb(190, 255, 255, 255));
+        return g;
+    }
+
+    private int dp(int v) {
+        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private boolean isPayRelatedPackage(String pkg) {
