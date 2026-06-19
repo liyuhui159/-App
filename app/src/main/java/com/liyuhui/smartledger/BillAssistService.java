@@ -1,7 +1,6 @@
 package com.liyuhui.smartledger;
 
 import android.accessibilityservice.AccessibilityService;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -27,11 +26,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class BillAssistService extends AccessibilityService {
-    private static final int MAX_LEN = 1600;
+    private static final int MAX_LEN = 2200;
     private static final long REPEAT_MS = 30000L;
     private static final long PENDING_MS = 180000L;
-    private static final long EVENT_THROTTLE_MS = 260L;
+    private static final long EVENT_THROTTLE_MS = 180L;
     private long lastEventAt = 0L;
+    private long lastProbeAt = 0L;
     private String lastShortText = "";
     private WindowManager overlayManager;
     private View overlayView;
@@ -61,17 +61,16 @@ public class BillAssistService extends AccessibilityService {
         lastEventAt = now;
 
         boolean hasPending = hasValidPending(pkg) || hasValidDraft(pkg);
-        boolean needDeepScan = fastMayBePayment(eventText) || hasPending || event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
+        boolean needDeepScan = fastMayBePayment(eventText) || hasPending || event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || event.getEventType() == AccessibilityEvent.TYPE_WINDOWS_CHANGED;
         if (!needDeepScan) return;
 
-        String text = eventText;
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root != null) {
-            StringBuilder sb = new StringBuilder(eventText);
-            readNode(root, sb, new HashSet<>(), 0);
-            text = normalize(sb.toString());
+        String text = readCurrentWindowText(eventText);
+        if (text.length() < 2) return;
+
+        if (maybeWeChatTransferScene(text) && overlayView == null && now - lastProbeAt > 4500L) {
+            lastProbeAt = now;
+            showProbeOverlay(pkg, text);
         }
-        if (text.length() < 4) return;
 
         if (isWeChatTransferInputPage(text)) {
             cacheTransferDraft(pkg, text);
@@ -100,6 +99,17 @@ public class BillAssistService extends AccessibilityService {
         super.onDestroy();
     }
 
+    private String readCurrentWindowText(String prefix) {
+        String text = prefix == null ? "" : prefix;
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root != null) {
+            StringBuilder sb = new StringBuilder(text);
+            readNode(root, sb, new HashSet<>(), 0);
+            text = normalize(sb.toString());
+        }
+        return text;
+    }
+
     private boolean hasValidPending(String pkg) {
         SharedPreferences sp = getSharedPreferences("bill_assist_pending", MODE_PRIVATE);
         long savedAt = sp.getLong("time", 0L);
@@ -116,21 +126,29 @@ public class BillAssistService extends AccessibilityService {
 
     private boolean fastMayBePayment(String t) {
         if (t == null) return false;
-        return t.contains("支付成功") || t.contains("转账成功") || t.contains("确认收款") || t.contains("请收款") || t.contains("¥") || t.contains("元") || t.contains("转账") || t.contains("红包") || t.contains("账单") || t.contains("订单") || t.contains("付款") || t.contains("收款") || t.contains("消费") || t.contains("转账给") || t.contains("转账金额") || t.contains("微信号");
+        return t.contains("支付成功") || t.contains("转账成功") || t.contains("确认收款") || t.contains("请收款") || t.contains("¥") || t.contains("￥") || t.contains("元") || t.contains("转账") || t.contains("红包") || t.contains("账单") || t.contains("订单") || t.contains("付款") || t.contains("收款") || t.contains("消费") || t.contains("转账给") || t.contains("转账金额") || t.contains("微信号");
+    }
+
+    private boolean maybeWeChatTransferScene(String t) {
+        if (t == null) return false;
+        return t.contains("转账给") || t.contains("转账金额") || t.contains("微信号") || t.contains("[转账] 请收款") || t.contains("支付成功") || t.contains("转账成功") || (t.contains("转账") && (t.contains("¥") || t.contains("￥") || t.contains("请收款") || t.contains("收款")));
     }
 
     private boolean isWeChatTransferInputPage(String t) {
         if (t == null) return false;
-        boolean title = t.contains("转账给") || t.contains("转账金额");
-        boolean amount = t.contains("¥") || t.matches(".*(?:转账金额|金额).*[-+]?\\d+(?:\\.\\d{1,2})?.*");
-        boolean button = t.contains("转账");
         boolean notSuccess = !t.contains("支付成功") && !t.contains("转账成功") && !t.contains("确认收款") && !t.contains("当前状态");
-        return title && amount && button && notSuccess;
+        boolean hasTitle = t.contains("转账给") || t.contains("转账金额") || t.contains("微信号");
+        boolean hasMoney = extractTransferAmount(t) > 0;
+        boolean hasTransferWord = t.contains("转账");
+        return notSuccess && hasTransferWord && (hasMoney || hasTitle);
     }
 
     private void cacheTransferDraft(String pkg, String text) {
         double amount = extractTransferAmount(text);
-        if (amount <= 0) return;
+        if (amount <= 0) {
+            showDebugTextOverlay("读到了转账页，但没读到金额：\n" + shorten(text, 180));
+            return;
+        }
         String recipient = extractTransferTarget(text);
         String wechatId = extractWechatId(text);
         String message = extractTransferMessage(text);
@@ -147,7 +165,7 @@ public class BillAssistService extends AccessibilityService {
                 .putLong("time", now)
                 .putLong("draft_tip_time", now)
                 .apply();
-        if (now - lastTip > 2500L) {
+        if (now - lastTip > 1800L) {
             String note = "微信转账" + (recipient.length() > 0 ? " - " + recipient : "") + (message.length() > 0 ? "（" + message + "）" : "");
             showDraftGlassOverlay(amount, note);
         }
@@ -155,16 +173,22 @@ public class BillAssistService extends AccessibilityService {
 
     private double extractTransferAmount(String text) {
         if (text == null) return 0D;
-        Matcher m = Pattern.compile("¥\\s*([0-9]+(?:\\.[0-9]{1,2})?)").matcher(text);
+        Matcher m = Pattern.compile("[¥￥]\\s*([0-9]+(?:\\.[0-9]{1,2})?)").matcher(text);
         if (m.find()) return toDouble(m.group(1));
         m = Pattern.compile("转账金额\\s*([0-9]+(?:\\.[0-9]{1,2})?)").matcher(text);
         if (m.find()) return toDouble(m.group(1));
+        if (text.contains("转账") || text.contains("支付成功") || text.contains("转账成功")) {
+            m = Pattern.compile("(?:^|\\s)([0-9]+\\.[0-9]{1,2})(?:\\s|$)").matcher(text);
+            if (m.find()) return toDouble(m.group(1));
+        }
         return 0D;
     }
 
     private String extractTransferTarget(String text) {
         if (text == null) return "";
-        Matcher m = Pattern.compile("转账给\\s*(.{1,28}?)(?:微信号|转账金额|¥|头像|$)").matcher(text);
+        Matcher m = Pattern.compile("转账给\\s*(.{1,32}?)(?:微信号|转账金额|[¥￥]|头像|$)").matcher(text);
+        if (m.find()) return cleanName(m.group(1));
+        m = Pattern.compile("待(.{1,24}?)确认收款").matcher(text);
         if (m.find()) return cleanName(m.group(1));
         return "";
     }
@@ -269,17 +293,54 @@ public class BillAssistService extends AccessibilityService {
         showConfirmGlassOverlay(raw, account, type, source, amount, note, category);
     }
 
-    private Intent buildQuickEntryIntent(String raw, String account, String type, String source, double amount, String note, String category) {
-        Intent i = new Intent(this, QuickEntryActivity.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        i.putExtra("raw_text", raw);
-        i.putExtra("forced_account", account);
-        i.putExtra("forced_type", type);
-        i.putExtra("source", source);
-        if (amount > 0) i.putExtra("forced_amount", amount);
-        i.putExtra("forced_note", note);
-        i.putExtra("forced_category", category);
-        return i;
+    private void manualRecognizeCurrentPage(String pkg) {
+        String text = readCurrentWindowText("");
+        if (text.length() < 2) {
+            showDebugTextOverlay("没有读到当前页面文字。请确认无障碍服务已重新开启。 ");
+            return;
+        }
+        if (isWeChatTransferInputPage(text)) {
+            cacheTransferDraft(pkg, text);
+            return;
+        }
+        if (isWeChatPaymentSuccess(text)) {
+            cachePendingPayment(pkg, text);
+            showAfterSuccessIfDraftReady(pkg, text);
+            return;
+        }
+        double amount = extractTransferAmount(text);
+        if (amount > 0) {
+            String recipient = extractTransferTarget(text);
+            String note = "微信转账" + (recipient.length() > 0 ? " - " + recipient : "");
+            showConfirmGlassOverlay(text, "微信", "支出", "手动强制识别当前页", amount, note, "人情");
+            return;
+        }
+        showDebugTextOverlay("已读取当前页，但没找到金额。读到的文字：\n" + shorten(text, 260));
+    }
+
+    private void showProbeOverlay(String pkg, String text) {
+        removeGlassOverlay();
+        overlayManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        if (overlayManager == null) return;
+        LinearLayout card = baseOverlayCard();
+        card.addView(overlayText("灵犀检测到微信转账相关页面", 15, Color.rgb(25, 28, 45), true));
+        card.addView(overlayText("点按钮强制读取当前页面", 12, Color.rgb(100, 105, 125), false));
+        TextView preview = overlayText(shorten(text, 80), 11, Color.rgb(120, 124, 145), false);
+        preview.setGravity(Gravity.LEFT);
+        card.addView(preview);
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setPadding(0, dp(8), 0, 0);
+        Button close = overlayButton("关闭", Color.argb(90, 255, 255, 255), Color.rgb(70, 74, 95));
+        Button scan = overlayButton("识别当前页", Color.rgb(52, 199, 89), Color.WHITE);
+        close.setOnClickListener(v -> removeGlassOverlay());
+        scan.setOnClickListener(v -> manualRecognizeCurrentPage(pkg));
+        actions.addView(close, new LinearLayout.LayoutParams(0, dp(44), 1));
+        TextView gap = new TextView(this);
+        actions.addView(gap, new LinearLayout.LayoutParams(dp(8), 1));
+        actions.addView(scan, new LinearLayout.LayoutParams(0, dp(44), 1));
+        card.addView(actions);
+        addOverlay(card, dp(72), 16000);
     }
 
     private void showDraftGlassOverlay(double amount, String note) {
@@ -341,6 +402,24 @@ public class BillAssistService extends AccessibilityService {
         new MainActivity.LedgerDb(this).insert(entry);
         QuickNotificationHelper.show(this);
         Toast.makeText(this, "已保存入账", Toast.LENGTH_SHORT).show();
+    }
+
+    private void showDebugTextOverlay(String message) {
+        removeGlassOverlay();
+        overlayManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        if (overlayManager == null) return;
+        LinearLayout card = baseOverlayCard();
+        TextView title = overlayText("灵犀调试信息", 16, Color.rgb(25, 28, 45), true);
+        TextView msg = overlayText(message, 11, Color.rgb(90, 95, 115), false);
+        msg.setGravity(Gravity.LEFT);
+        Button close = overlayButton("关闭", Color.argb(120, 255, 255, 255), Color.rgb(70, 74, 95));
+        close.setOnClickListener(v -> removeGlassOverlay());
+        card.addView(title);
+        card.addView(msg);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, dp(44));
+        blp.setMargins(0, dp(10), 0, 0);
+        card.addView(close, blp);
+        addOverlay(card, dp(72), 20000);
     }
 
     private LinearLayout baseOverlayCard() {
@@ -436,14 +515,13 @@ public class BillAssistService extends AccessibilityService {
     }
 
     private boolean isWeChatPaymentSuccess(String t) {
-        return (t.contains("支付成功") || t.contains("转账成功"))
-                && t.matches(".*[-+]?\\d+(?:\\.\\d{1,2})?.*")
-                && ((t.contains("待") && t.contains("确认收款")) || t.contains("完成") || t.contains("请收款") || t.contains("收款"));
+        return (t.contains("支付成功") || t.contains("转账成功") || t.contains("请收款"))
+                && (extractTransferAmount(t) > 0 || t.matches(".*[-+]?\\d+(?:\\.\\d{1,2})?.*"));
     }
 
     private boolean isBillDetail(String t) {
         if (t == null || t.length() < 8) return false;
-        boolean money = t.matches(".*[-+]?\\d+(?:\\.\\d{1,2})?.*") && (t.contains("元") || t.contains("¥") || t.contains("付款") || t.contains("支付") || t.contains("消费") || t.contains("收款") || t.contains("到账") || t.contains("退款"));
+        boolean money = extractTransferAmount(t) > 0 || (t.matches(".*[-+]?\\d+(?:\\.\\d{1,2})?.*") && (t.contains("元") || t.contains("¥") || t.contains("￥")));
         boolean detail = t.contains("支付成功") || t.contains("转账成功") || t.contains("当前状态") || t.contains("转账时间") || t.contains("转账单号") || t.contains("支付方式") || t.contains("账单") || t.contains("订单") || t.contains("二维码收款") || t.contains("收款方备注") || t.contains("商品说明") || t.contains("商户");
         return money && detail;
     }
@@ -466,7 +544,7 @@ public class BillAssistService extends AccessibilityService {
         if (t == null) return "";
         Matcher m = Pattern.compile("待(.{1,20}?)确认收款").matcher(t);
         if (m.find()) return cleanName(m.group(1));
-        m = Pattern.compile("转账给\\s*(.{1,28}?)(?:微信号|转账金额|¥|头像|$)").matcher(t);
+        m = Pattern.compile("转账给\\s*(.{1,28}?)(?:微信号|转账金额|[¥￥]|头像|$)").matcher(t);
         if (m.find()) return cleanName(m.group(1));
         return "";
     }
@@ -499,6 +577,7 @@ public class BillAssistService extends AccessibilityService {
                 .replace("支付成功", "")
                 .replace("转账成功", "")
                 .replace("¥", "")
+                .replace("￥", "")
                 .replaceAll("L[0-9A-Za-z_\\-]{4,32}", "")
                 .replaceAll("[0-9.]+", "")
                 .replaceAll("[：:，,。；;\\n\\r]", "")
@@ -518,7 +597,7 @@ public class BillAssistService extends AccessibilityService {
     }
 
     private void readNode(AccessibilityNodeInfo node, StringBuilder sb, Set<Integer> visited, int depth) {
-        if (node == null || depth > 9 || sb.length() > MAX_LEN) return;
+        if (node == null || depth > 14 || sb.length() > MAX_LEN) return;
         int id = System.identityHashCode(node);
         if (visited.contains(id)) return;
         visited.add(id);
@@ -537,4 +616,5 @@ public class BillAssistService extends AccessibilityService {
     }
 
     private String normalize(String s) { return s == null ? "" : s.replace('\n', ' ').replace('\r', ' ').replaceAll("\\s+", " ").trim(); }
+    private String shorten(String s, int n) { if (s == null) return ""; s = normalize(s); return s.length() > n ? s.substring(0, n) + "…" : s; }
 }
