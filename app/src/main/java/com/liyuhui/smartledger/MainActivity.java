@@ -6,6 +6,7 @@ import android.app.AlertDialog;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
@@ -26,6 +27,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -54,6 +56,10 @@ public class MainActivity extends Activity {
     static final int WARNING = Color.rgb(255, 181, 71);
     static final String[] CATEGORIES = {"餐饮", "交通", "购物", "住房", "学习", "医疗", "娱乐", "通讯", "人情", "工资", "退款", "其他"};
     static final String[] ACCOUNTS = {"微信", "支付宝", "银行卡", "信用卡", "现金", "其他"};
+    public static final String PREFS = "ledger_settings";
+    public static final String KEY_REVIEW_MODE = "review_mode";
+    public static final String MODE_OVERLAY = "overlay";
+    public static final String MODE_NOTIFICATION = "notification";
 
     private LedgerDb db;
     private LinearLayout page;
@@ -61,8 +67,19 @@ public class MainActivity extends Activity {
     private final SimpleDateFormat monthFmt = new SimpleDateFormat("yyyy-MM", Locale.CHINA);
     private final SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA);
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    public static String reviewMode(Context c) {
+        return c.getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_REVIEW_MODE, MODE_OVERLAY);
+    }
+
+    public static boolean useBottomOverlay(Context c) {
+        return MODE_OVERLAY.equals(reviewMode(c));
+    }
+
+    public static void setReviewMode(Context c, String mode) {
+        c.getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_REVIEW_MODE, mode).apply();
+    }
+
+    @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         db = new LedgerDb(this);
         requestNotifyPermissionIfNeeded();
@@ -73,8 +90,7 @@ public class MainActivity extends Activity {
         if (cleaned > 0) toast("已清理 " + cleaned + " 条误识别通知流水");
     }
 
-    @Override
-    protected void onResume() {
+    @Override protected void onResume() {
         super.onResume();
         if (db != null) {
             QuickNotificationHelper.show(this);
@@ -83,9 +99,7 @@ public class MainActivity extends Activity {
     }
 
     private void requestNotifyPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 33);
-        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 33);
     }
 
     private void buildFrame() {
@@ -93,16 +107,13 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
         setContentView(root);
-
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
         header.setPadding(dp(20), dp(18), dp(20), dp(16));
         header.setBackground(gradient(PRIMARY, Color.rgb(109, 82, 232)));
         root.addView(header, new LinearLayout.LayoutParams(-1, -2));
-
         header.addView(text("灵犀记账", 28, Color.WHITE, true));
         header.addView(text("自动识别 · 智能分类 · 3D 图表 · 本地隐私", 14, Color.argb(230, 255, 255, 255), false));
-
         LinearLayout quick = new LinearLayout(this);
         quick.setOrientation(LinearLayout.HORIZONTAL);
         quick.setPadding(0, dp(12), 0, 0);
@@ -123,16 +134,11 @@ public class MainActivity extends Activity {
         root.addView(navScroll, new LinearLayout.LayoutParams(-1, -2));
         for (String tab : new String[]{"看板", "记账", "智能导入", "流水", "预算", "设置"}) {
             Button b = pill(tab, tab.equals(currentTab) ? Color.argb(225, 91, 95, 239) : Color.argb(185, 255, 255, 255), tab.equals(currentTab) ? Color.WHITE : PRIMARY_DARK);
-            b.setOnClickListener(v -> {
-                currentTab = ((Button) v).getText().toString();
-                buildFrame();
-                openTab(currentTab);
-            });
+            b.setOnClickListener(v -> { currentTab = ((Button) v).getText().toString(); buildFrame(); openTab(currentTab); });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(96), dp(42));
             lp.setMargins(0, 0, dp(8), 0);
             nav.addView(b, lp);
         }
-
         ScrollView scroll = new ScrollView(this);
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -166,19 +172,16 @@ public class MainActivity extends Activity {
         addGap(row2, 10);
         row2.addView(statCard("今日支出", money(totals.todayExpense), WARNING), new LinearLayout.LayoutParams(0, dp(90), 1));
         page.addView(row2);
-
         addSectionTitle("近 7 日分类叠加砖块图");
         page.addView(text("同一天不同分类按颜色堆叠，像砖块一样显示消费构成", 13, Color.rgb(110, 115, 135), false));
         StackedBrickChartView stacked = new StackedBrickChartView(this);
         stacked.setValues(db.lastSevenDayCategoryExpense());
         page.addView(cardWrap(stacked, dp(245)));
-
         addSectionTitle("分类支出 3D 饼图");
         page.addView(text("饼图扇区直接显示金额和占比，左右拖动可旋转", 13, Color.rgb(110, 115, 135), false));
         Pie3DView pie = new Pie3DView(this);
         pie.setValues(db.categoryExpense(month));
         page.addView(cardWrap(pie, dp(330)));
-
         addSectionTitle("最近流水 · 点击查看详情");
         renderEntries(db.listEntries(8, "", "全部"));
     }
@@ -194,30 +197,9 @@ public class MainActivity extends Activity {
         EditText amount = input("金额，例如 18.50", true);
         EditText note = input("备注，例如 肯德基 / 微信转账 - A", false);
         EditText date = input("日期 yyyy-MM-dd，留空默认今天", false);
-        c.addView(label("收支类型")); c.addView(type);
-        c.addView(label("分类")); c.addView(category);
-        c.addView(label("账户")); c.addView(account);
-        c.addView(label("金额")); c.addView(amount);
-        c.addView(label("备注")); c.addView(note);
-        c.addView(label("日期")); c.addView(date);
+        c.addView(label("收支类型")); c.addView(type); c.addView(label("分类")); c.addView(category); c.addView(label("账户")); c.addView(account); c.addView(label("金额")); c.addView(amount); c.addView(label("备注")); c.addView(note); c.addView(label("日期")); c.addView(date);
         Button save = primaryButton("保存账目");
-        save.setOnClickListener(v -> {
-            double a = parseDouble(amount.getText().toString());
-            if (a <= 0) { toast("金额必须大于 0"); return; }
-            Entry e = new Entry();
-            e.amount = a;
-            e.type = type.getSelectedItem().toString();
-            e.category = category.getSelectedItem().toString();
-            e.account = account.getSelectedItem().toString();
-            e.note = note.getText().toString().trim();
-            e.source = "手动记账";
-            e.time = parseDate(date.getText().toString().trim());
-            if ("其他".equals(e.category)) e.category = SmartParser.inferCategory(e.note, e.type);
-            db.insert(e);
-            QuickNotificationHelper.show(this);
-            toast("已保存");
-            showDashboard();
-        });
+        save.setOnClickListener(v -> { double a = parseDouble(amount.getText().toString()); if (a <= 0) { toast("金额必须大于 0"); return; } Entry e = new Entry(); e.amount = a; e.type = type.getSelectedItem().toString(); e.category = category.getSelectedItem().toString(); e.account = account.getSelectedItem().toString(); e.note = note.getText().toString().trim(); e.source = "手动记账"; e.time = parseDate(date.getText().toString().trim()); if ("其他".equals(e.category)) e.category = SmartParser.inferCategory(e.note, e.type); db.insert(e); QuickNotificationHelper.show(this); toast("已保存"); showDashboard(); });
         c.addView(save, new LinearLayout.LayoutParams(-1, dp(48)));
         page.addView(c);
     }
@@ -227,23 +209,12 @@ public class MainActivity extends Activity {
         page.removeAllViews();
         addSectionTitle("智能导入");
         page.addView(text("粘贴支付宝、微信、银行或外卖账单文本；系统会自动去噪、识别金额和分类。", 14, Color.rgb(95, 100, 120), false));
-        EditText raw = input("例如：支付宝 扫码支付 肯德基宅急送 金额39.40", false);
-        raw.setGravity(Gravity.TOP);
-        raw.setMinLines(7);
+        EditText raw = input("例如：微信 红包金额0.01元 等待对方领取", false);
+        raw.setGravity(Gravity.TOP); raw.setMinLines(7);
         page.addView(raw, new LinearLayout.LayoutParams(-1, dp(170)));
-        LinearLayout resultBox = card();
-        page.addView(resultBox);
+        LinearLayout resultBox = card(); page.addView(resultBox);
         Button parse = primaryButton("智能解析");
-        parse.setOnClickListener(v -> {
-            resultBox.removeAllViews();
-            List<Entry> entries = SmartParser.parse(raw.getText().toString());
-            if (entries.isEmpty()) { resultBox.addView(text("没有识别到账单金额。", 15, DANGER, true)); return; }
-            resultBox.addView(text("识别结果：" + entries.size() + " 条", 17, PRIMARY_DARK, true));
-            for (Entry e : entries) resultBox.addView(entryLine(e));
-            Button saveAll = primaryButton("全部入账");
-            saveAll.setOnClickListener(x -> { for (Entry e : entries) db.insert(e); QuickNotificationHelper.show(this); toast("已导入 " + entries.size() + " 条"); showDashboard(); });
-            resultBox.addView(saveAll, new LinearLayout.LayoutParams(-1, dp(48)));
-        });
+        parse.setOnClickListener(v -> { resultBox.removeAllViews(); List<Entry> entries = SmartParser.parse(raw.getText().toString()); if (entries.isEmpty()) { resultBox.addView(text("没有识别到账单金额。", 15, DANGER, true)); return; } resultBox.addView(text("识别结果：" + entries.size() + " 条", 17, PRIMARY_DARK, true)); for (Entry e : entries) resultBox.addView(entryLine(e)); Button saveAll = primaryButton("全部入账"); saveAll.setOnClickListener(x -> { for (Entry e : entries) db.insert(e); QuickNotificationHelper.show(this); toast("已导入 " + entries.size() + " 条"); showDashboard(); }); resultBox.addView(saveAll, new LinearLayout.LayoutParams(-1, dp(48))); });
         page.addView(parse, new LinearLayout.LayoutParams(-1, dp(48)));
     }
 
@@ -252,18 +223,12 @@ public class MainActivity extends Activity {
         page.removeAllViews();
         addSectionTitle("交易流水 · 点击查看详情");
         LinearLayout tools = card();
-        EditText search = input("搜索备注、分类、账户", false);
-        search.setText(query);
-        Spinner type = spinner(new String[]{"全部", "支出", "收入"});
-        type.setSelection("收入".equals(typeFilter) ? 2 : "支出".equals(typeFilter) ? 1 : 0);
-        Button apply = primaryButton("筛选");
-        apply.setOnClickListener(v -> showRecords(search.getText().toString().trim(), type.getSelectedItem().toString()));
-        Button export = secondaryButton("导出 CSV / 分享");
-        export.setOnClickListener(v -> shareCsv());
-        Button clean = secondaryButton("清理误识别通知");
-        clean.setOnClickListener(v -> { int n = db.cleanFalseNotificationEntries(); toast("已清理 " + n + " 条"); showRecords("", "全部"); });
-        tools.addView(search); tools.addView(type); tools.addView(apply); tools.addView(export); tools.addView(clean);
-        page.addView(tools);
+        EditText search = input("搜索备注、分类、账户", false); search.setText(query);
+        Spinner type = spinner(new String[]{"全部", "支出", "收入"}); type.setSelection("收入".equals(typeFilter) ? 2 : "支出".equals(typeFilter) ? 1 : 0);
+        Button apply = primaryButton("筛选"); apply.setOnClickListener(v -> showRecords(search.getText().toString().trim(), type.getSelectedItem().toString()));
+        Button export = secondaryButton("导出 CSV / 分享"); export.setOnClickListener(v -> shareCsv());
+        Button clean = secondaryButton("清理误识别通知"); clean.setOnClickListener(v -> { int n = db.cleanFalseNotificationEntries(); toast("已清理 " + n + " 条"); showRecords("", "全部"); });
+        tools.addView(search); tools.addView(type); tools.addView(apply); tools.addView(export); tools.addView(clean); page.addView(tools);
         renderEntries(db.listEntries(200, query, typeFilter));
     }
 
@@ -276,29 +241,13 @@ public class MainActivity extends Activity {
         Spinner category = spinner(CATEGORIES);
         EditText amount = input("预算金额，例如 1200", true);
         Button save = primaryButton("保存预算");
-        save.setOnClickListener(v -> {
-            double a = parseDouble(amount.getText().toString());
-            if (a <= 0) { toast("预算金额必须大于 0"); return; }
-            db.setBudget(month, category.getSelectedItem().toString(), a);
-            toast("预算已保存");
-            showBudget();
-        });
-        form.addView(label("分类")); form.addView(category); form.addView(label("预算金额")); form.addView(amount); form.addView(save);
-        page.addView(form);
+        save.setOnClickListener(v -> { double a = parseDouble(amount.getText().toString()); if (a <= 0) { toast("预算金额必须大于 0"); return; } db.setBudget(month, category.getSelectedItem().toString(), a); toast("预算已保存"); showBudget(); });
+        form.addView(label("分类")); form.addView(category); form.addView(label("预算金额")); form.addView(amount); form.addView(save); page.addView(form);
         addSectionTitle("执行情况");
         Map<String, Double> spend = db.categoryExpense(month);
         List<Budget> budgets = db.listBudgets(month);
         if (budgets.isEmpty()) page.addView(empty("还没有预算，先添加一个。"));
-        for (Budget b : budgets) {
-            double used = spend.containsKey(b.category) ? spend.get(b.category) : 0;
-            LinearLayout c = card();
-            c.addView(text(iconForCategory(b.category) + " " + b.category + "  " + money(used) + " / " + money(b.amount), 16, PRIMARY_DARK, true));
-            ProgressView p = new ProgressView(this);
-            p.setProgress((float) Math.min(1, used / Math.max(1, b.amount)), used > b.amount ? DANGER : ACCENT);
-            c.addView(p, new LinearLayout.LayoutParams(-1, dp(18)));
-            if (used > b.amount) c.addView(text("已超支 " + money(used - b.amount), 13, DANGER, true));
-            page.addView(c);
-        }
+        for (Budget b : budgets) { double used = spend.containsKey(b.category) ? spend.get(b.category) : 0; LinearLayout c = card(); c.addView(text(iconForCategory(b.category) + " " + b.category + "  " + money(used) + " / " + money(b.amount), 16, PRIMARY_DARK, true)); ProgressView p = new ProgressView(this); p.setProgress((float) Math.min(1, used / Math.max(1, b.amount)), used > b.amount ? DANGER : ACCENT); c.addView(p, new LinearLayout.LayoutParams(-1, dp(18))); if (used > b.amount) c.addView(text("已超支 " + money(used - b.amount), 13, DANGER, true)); page.addView(c); }
     }
 
     private void showSettings() {
@@ -307,88 +256,39 @@ public class MainActivity extends Activity {
         addSectionTitle("权限与自动识别");
         LinearLayout c = card();
         c.addView(text("建议同时开启通知权限、通知使用权和无障碍服务。", 15, PRIMARY_DARK, true));
-        c.addView(text("通知栏现在会显示今日收入、支出和结余。", 13, Color.rgb(95, 100, 120), false));
-        Button a = primaryButton("开启无障碍服务");
-        a.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
-        Button n = secondaryButton("开启通知使用权");
-        n.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
-        Button refresh = secondaryButton("刷新通知栏今日收支");
-        refresh.setOnClickListener(v -> { QuickNotificationHelper.show(this); toast("通知栏已刷新"); });
-        Button clean = secondaryButton("清理误识别通知流水");
-        clean.setOnClickListener(v -> toast("已清理 " + db.cleanFalseNotificationEntries() + " 条"));
-        c.addView(a, new LinearLayout.LayoutParams(-1, dp(48)));
-        c.addView(n, new LinearLayout.LayoutParams(-1, dp(48)));
-        c.addView(refresh, new LinearLayout.LayoutParams(-1, dp(48)));
-        c.addView(clean, new LinearLayout.LayoutParams(-1, dp(48)));
+        c.addView(text("通知栏会显示今日收入、支出和结余；识别提醒可二选一。", 13, Color.rgb(95, 100, 120), false));
+        Button a = primaryButton("开启无障碍服务"); a.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        Button n = secondaryButton("开启通知使用权"); n.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+        Button refresh = secondaryButton("刷新通知栏今日收支"); refresh.setOnClickListener(v -> { QuickNotificationHelper.show(this); toast("通知栏已刷新"); });
+        Button clean = secondaryButton("清理误识别通知流水"); clean.setOnClickListener(v -> toast("已清理 " + db.cleanFalseNotificationEntries() + " 条"));
+        c.addView(a, new LinearLayout.LayoutParams(-1, dp(48))); c.addView(n, new LinearLayout.LayoutParams(-1, dp(48))); c.addView(refresh, new LinearLayout.LayoutParams(-1, dp(48))); c.addView(clean, new LinearLayout.LayoutParams(-1, dp(48)));
         page.addView(c);
+
+        addSectionTitle("识别提醒方式 · 二选一");
+        LinearLayout mode = card();
+        CheckBox bottom = new CheckBox(this);
+        bottom.setText("底部玻璃弹窗：识别后在当前页面底部弹出确认卡");
+        bottom.setTextSize(15); bottom.setTextColor(PRIMARY_DARK);
+        CheckBox notify = new CheckBox(this);
+        notify.setText("通知栏确认：识别后只发通知，不弹底部卡片");
+        notify.setTextSize(15); notify.setTextColor(PRIMARY_DARK);
+        boolean useOverlay = useBottomOverlay(this);
+        bottom.setChecked(useOverlay); notify.setChecked(!useOverlay);
+        bottom.setOnClickListener(v -> { setReviewMode(this, MODE_OVERLAY); bottom.setChecked(true); notify.setChecked(false); toast("已切换为底部玻璃弹窗"); });
+        notify.setOnClickListener(v -> { setReviewMode(this, MODE_NOTIFICATION); notify.setChecked(true); bottom.setChecked(false); toast("已切换为通知栏确认"); QuickNotificationHelper.show(this); });
+        mode.addView(bottom); mode.addView(notify);
+        mode.addView(text("说明：通知主体点其他区域进入 App 首页；通知按钮进入编辑确认页。", 12, Color.rgb(100, 105, 125), false));
+        page.addView(mode);
     }
 
-    private void renderEntries(List<Entry> entries) {
-        if (entries.isEmpty()) { page.addView(empty("暂无账目。")); return; }
-        for (Entry e : entries) page.addView(entryLine(e));
-    }
+    private void renderEntries(List<Entry> entries) { if (entries.isEmpty()) { page.addView(empty("暂无账目。")); return; } for (Entry e : entries) page.addView(entryLine(e)); }
+    private View entryLine(Entry e) { LinearLayout c = card(); LinearLayout top = row(); TextView left = text(iconForCategory(e.category) + " " + e.category + " · " + e.account, 16, PRIMARY_DARK, true); TextView right = text(("收入".equals(e.type) ? "+" : "-") + money(e.amount), 17, "收入".equals(e.type) ? ACCENT : DANGER, true); top.addView(left, new LinearLayout.LayoutParams(0, -2, 1)); top.addView(right); c.addView(top); c.addView(text((e.note == null || e.note.isEmpty() ? "无备注" : e.note) + "  ·  " + dateFmt.format(new Date(e.time)) + "  ·  " + e.source, 13, Color.rgb(105, 110, 130), false)); c.setOnClickListener(v -> { Intent i = new Intent(this, EntryDetailActivity.class); i.putExtra("id", e.id); i.putExtra("amount", e.amount); i.putExtra("type", e.type); i.putExtra("category", e.category); i.putExtra("account", e.account); i.putExtra("note", e.note); i.putExtra("source", e.source); i.putExtra("time", e.time); startActivity(i); }); c.setOnLongClickListener(v -> { new AlertDialog.Builder(this).setTitle("删除账目").setMessage("确定删除这条记录吗？").setPositiveButton("删除", (d, w) -> { db.delete(e.id); QuickNotificationHelper.show(this); showRecords("", "全部"); }).setNegativeButton("取消", null).show(); return true; }); return c; }
+    private void showPermissionDialog() { new AlertDialog.Builder(this).setTitle("开启自动记账权限").setMessage("请开启：1. 通知权限；2. 通知使用权；3. 无障碍服务。").setPositiveButton("无障碍", (d, w) -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))).setNegativeButton("通知使用权", (d, w) -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))).show(); }
+    private void shareCsv() { String csv = Csv.toCsv(db.listEntries(5000, "", "全部")); Intent send = new Intent(Intent.ACTION_SEND); send.setType("text/csv"); send.putExtra(Intent.EXTRA_SUBJECT, "灵犀记账CSV导出"); send.putExtra(Intent.EXTRA_TEXT, csv); startActivity(Intent.createChooser(send, "导出/分享 CSV")); }
 
-    private View entryLine(Entry e) {
-        LinearLayout c = card();
-        LinearLayout top = row();
-        TextView left = text(iconForCategory(e.category) + " " + e.category + " · " + e.account, 16, PRIMARY_DARK, true);
-        TextView right = text(("收入".equals(e.type) ? "+" : "-") + money(e.amount), 17, "收入".equals(e.type) ? ACCENT : DANGER, true);
-        top.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
-        top.addView(right);
-        c.addView(top);
-        c.addView(text((e.note == null || e.note.isEmpty() ? "无备注" : e.note) + "  ·  " + dateFmt.format(new Date(e.time)) + "  ·  " + e.source, 13, Color.rgb(105, 110, 130), false));
-        c.setOnClickListener(v -> {
-            Intent i = new Intent(this, EntryDetailActivity.class);
-            i.putExtra("id", e.id); i.putExtra("amount", e.amount); i.putExtra("type", e.type); i.putExtra("category", e.category); i.putExtra("account", e.account); i.putExtra("note", e.note); i.putExtra("source", e.source); i.putExtra("time", e.time);
-            startActivity(i);
-        });
-        c.setOnLongClickListener(v -> { new AlertDialog.Builder(this).setTitle("删除账目").setMessage("确定删除这条记录吗？").setPositiveButton("删除", (d, w) -> { db.delete(e.id); QuickNotificationHelper.show(this); showRecords("", "全部"); }).setNegativeButton("取消", null).show(); return true; });
-        return c;
-    }
-
-    private void showPermissionDialog() {
-        new AlertDialog.Builder(this)
-                .setTitle("开启自动记账权限")
-                .setMessage("请开启：1. 通知权限；2. 通知使用权；3. 无障碍服务。")
-                .setPositiveButton("无障碍", (d, w) -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))
-                .setNegativeButton("通知使用权", (d, w) -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)))
-                .show();
-    }
-
-    private void shareCsv() {
-        String csv = Csv.toCsv(db.listEntries(5000, "", "全部"));
-        Intent send = new Intent(Intent.ACTION_SEND);
-        send.setType("text/csv");
-        send.putExtra(Intent.EXTRA_SUBJECT, "灵犀记账CSV导出");
-        send.putExtra(Intent.EXTRA_TEXT, csv);
-        startActivity(Intent.createChooser(send, "导出/分享 CSV"));
-    }
-
-    private LinearLayout card() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(14), dp(14), dp(14), dp(14));
-        c.setBackground(glassRound(Color.argb(205, 255, 255, 255), 20));
-        c.setElevation(dp(5));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.setMargins(0, dp(8), 0, dp(8));
-        c.setLayoutParams(lp);
-        return c;
-    }
-
-    private View cardWrap(View child, int height) {
-        LinearLayout c = card();
-        c.addView(child, new LinearLayout.LayoutParams(-1, height));
-        return c;
-    }
-
-    private LinearLayout statCard(String title, String value, int color) {
-        LinearLayout c = card();
-        c.addView(text(title, 13, Color.rgb(105, 110, 130), false));
-        c.addView(text(value, 22, color, true));
-        return c;
-    }
-
+    private LinearLayout card() { LinearLayout c = new LinearLayout(this); c.setOrientation(LinearLayout.VERTICAL); c.setPadding(dp(14), dp(14), dp(14), dp(14)); c.setBackground(glassRound(Color.argb(205, 255, 255, 255), 20)); c.setElevation(dp(5)); LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.setMargins(0, dp(8), 0, dp(8)); c.setLayoutParams(lp); return c; }
+    private View cardWrap(View child, int height) { LinearLayout c = card(); c.addView(child, new LinearLayout.LayoutParams(-1, height)); return c; }
+    private LinearLayout statCard(String title, String value, int color) { LinearLayout c = card(); c.addView(text(title, 13, Color.rgb(105, 110, 130), false)); c.addView(text(value, 22, color, true)); return c; }
     private void addSectionTitle(String s) { TextView t = text(s, 18, PRIMARY_DARK, true); t.setPadding(dp(2), dp(14), dp(2), dp(6)); page.addView(t); }
     private TextView label(String s) { TextView t = text(s, 13, Color.rgb(95, 100, 120), true); t.setPadding(0, dp(10), 0, dp(4)); return t; }
     private TextView empty(String s) { TextView t = text(s, 15, Color.rgb(120, 125, 145), false); t.setGravity(Gravity.CENTER); t.setPadding(dp(16), dp(24), dp(16), dp(24)); t.setBackground(glassRound(Color.argb(205, 255, 255, 255), 18)); return t; }
@@ -416,12 +316,12 @@ public class MainActivity extends Activity {
     public static class SmartParser {
         private static final Pattern AMOUNT = Pattern.compile("[-+]?\\d+(?:\\.\\d{1,2})?");
         public static List<Entry> parse(String raw) { List<Entry> result = new ArrayList<>(); if (raw == null) return result; for (String line : raw.split("\\n|；|;。")) { Entry e = parseOne(line.trim()); if (e != null) result.add(e); } return result; }
-        public static Entry parseOne(String line) { if (line == null || line.trim().isEmpty()) return null; double chosen = 0; Matcher m = AMOUNT.matcher(line.replace(",", "")); while (m.find()) { double v = Math.abs(toDouble(m.group())); if (v > 0 && v < 100000000) { chosen = v; break; } } if (chosen <= 0) return null; Entry e = new Entry(); e.amount = chosen; e.type = inferType(line); e.category = inferCategory(line, e.type); e.account = inferAccount(line); e.note = cleanNote(line); e.source = "智能解析"; e.time = inferDate(line); return e; }
+        public static Entry parseOne(String line) { if (line == null || line.trim().isEmpty()) return null; double chosen = 0; Matcher money = Pattern.compile("[¥￥]?\\s*([-+]?\\d+(?:\\.\\d{1,2})?)\\s*(?:元)?").matcher(line.replace(",", "")); while (money.find()) { double v = Math.abs(toDouble(money.group(1))); if (v > 0 && v < 100000000) { chosen = v; break; } } if (chosen <= 0) return null; Entry e = new Entry(); e.amount = chosen; e.type = inferType(line); e.category = inferCategory(line, e.type); e.account = inferAccount(line); e.note = cleanNote(line); e.source = "智能解析"; e.time = inferDate(line); return e; }
         private static String inferType(String s) { String t = s.toLowerCase(Locale.ROOT); if (s.contains("收入") || s.contains("工资") || s.contains("到账") || s.contains("收款") || s.contains("退款") || s.contains("奖金") || t.contains("income") || s.contains("+")) return "收入"; return "支出"; }
-        public static String inferCategory(String s, String type) { if (s == null) return "其他"; String lower = s.toLowerCase(Locale.ROOT); if ("收入".equals(type)) { if (has(s, "工资", "薪", "奖金")) return "工资"; if (has(s, "退款", "退回")) return "退款"; return "其他"; } if (has(s, "肯德基", "麦当劳", "必胜客", "汉堡王", "瑞幸", "星巴克", "蜜雪", "喜茶", "奈雪", "茶百道", "古茗", "美团", "饿了么", "外卖", "饭", "餐", "食堂", "超市", "咖啡", "奶茶", "火锅", "烧烤", "小吃") || lower.contains("kfc") || lower.contains("mcdonald")) return "餐饮"; if (has(s, "滴滴", "打车", "公交", "地铁", "高铁", "火车", "机票", "油费", "停车")) return "交通"; if (has(s, "淘宝", "天猫", "京东", "拼多多", "购物", "衣服", "鞋", "数码", "抖音商城")) return "购物"; if (has(s, "房租", "水电", "物业", "燃气", "宽带", "租金")) return "住房"; if (has(s, "书", "课程", "学费", "考试", "培训", "文具")) return "学习"; if (has(s, "医院", "药", "挂号", "医保", "体检")) return "医疗"; if (has(s, "电影", "游戏", "会员", "娱乐", "KTV", "旅游")) return "娱乐"; if (has(s, "话费", "流量", "通讯")) return "通讯"; if (has(s, "红包", "转账", "礼物", "请客", "份子")) return "人情"; return "其他"; }
+        public static String inferCategory(String s, String type) { if (s == null) return "其他"; String lower = s.toLowerCase(Locale.ROOT); if ("收入".equals(type)) { if (has(s, "工资", "薪", "奖金")) return "工资"; if (has(s, "退款", "退回")) return "退款"; return "其他"; } if (has(s, "红包", "转账", "礼物", "请客", "份子", "恭喜发财", "大吉大利")) return "人情"; if (has(s, "肯德基", "麦当劳", "必胜客", "汉堡王", "瑞幸", "星巴克", "蜜雪", "喜茶", "奈雪", "茶百道", "古茗", "美团", "饿了么", "外卖", "饭", "餐", "食堂", "超市", "咖啡", "奶茶", "火锅", "烧烤", "小吃") || lower.contains("kfc") || lower.contains("mcdonald")) return "餐饮"; if (has(s, "滴滴", "打车", "公交", "地铁", "高铁", "火车", "机票", "油费", "停车")) return "交通"; if (has(s, "淘宝", "天猫", "京东", "拼多多", "购物", "衣服", "鞋", "数码", "抖音商城")) return "购物"; if (has(s, "房租", "水电", "物业", "燃气", "宽带", "租金")) return "住房"; if (has(s, "书", "课程", "学费", "考试", "培训", "文具")) return "学习"; if (has(s, "医院", "药", "挂号", "医保", "体检")) return "医疗"; if (has(s, "电影", "游戏", "会员", "娱乐", "KTV", "旅游")) return "娱乐"; if (has(s, "话费", "流量", "通讯")) return "通讯"; return "其他"; }
         private static boolean has(String s, String... keys) { for (String k : keys) if (s.contains(k)) return true; return false; }
         private static String inferAccount(String s) { if (s.contains("微信")) return "微信"; if (s.contains("支付宝") || s.contains("花呗")) return "支付宝"; if (s.contains("信用卡")) return "信用卡"; if (s.contains("银行") || s.contains("招商") || s.contains("工商") || s.contains("建设") || s.contains("农业")) return "银行卡"; if (s.contains("现金")) return "现金"; return "其他"; }
-        private static String cleanNote(String s) { return s.replaceAll("[-+]?\\d+(?:\\.\\d{1,2})?", "").replace("¥", "").replace("元", "").replaceAll("\\s+", " ").trim(); }
+        private static String cleanNote(String s) { return s.replaceAll("[-+]?\\d+(?:\\.\\d{1,2})?", "").replace("¥", "").replace("￥", "").replace("元", "").replaceAll("\\s+", " ").trim(); }
         public static double toDouble(String s) { try { return Double.parseDouble(s); } catch (Exception e) { return 0; } }
         private static long inferDate(String s) { Calendar c = Calendar.getInstance(); if (s.contains("昨天")) c.add(Calendar.DATE, -1); if (s.contains("前天")) c.add(Calendar.DATE, -2); Matcher m = Pattern.compile("(20\\d{2})[-/年](\\d{1,2})[-/月](\\d{1,2})").matcher(s); if (m.find()) { c.set(Calendar.YEAR, Integer.parseInt(m.group(1))); c.set(Calendar.MONTH, Integer.parseInt(m.group(2)) - 1); c.set(Calendar.DAY_OF_MONTH, Integer.parseInt(m.group(3))); } return c.getTimeInMillis(); }
     }
