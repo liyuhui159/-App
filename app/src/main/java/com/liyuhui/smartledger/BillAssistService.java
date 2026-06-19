@@ -14,10 +14,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class BillAssistService extends AccessibilityService {
-    private static final int MAX_LEN = 1400;
+    private static final int MAX_LEN = 1600;
     private static final long REPEAT_MS = 30000L;
-    private static final long PENDING_MS = 120000L;
-    private static final long EVENT_THROTTLE_MS = 350L;
+    private static final long PENDING_MS = 180000L;
+    private static final long EVENT_THROTTLE_MS = 260L;
     private long lastEventAt = 0L;
     private String lastShortText = "";
 
@@ -41,7 +41,7 @@ public class BillAssistService extends AccessibilityService {
         lastShortText = eventText;
         lastEventAt = now;
 
-        boolean hasPending = hasValidPending(pkg);
+        boolean hasPending = hasValidPending(pkg) || hasValidDraft(pkg);
         boolean needDeepScan = fastMayBePayment(eventText) || hasPending || event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
         if (!needDeepScan) return;
 
@@ -54,8 +54,14 @@ public class BillAssistService extends AccessibilityService {
         }
         if (text.length() < 4) return;
 
+        if (isWeChatTransferInputPage(text)) {
+            cacheTransferDraft(pkg, text);
+            return;
+        }
+
         if (isWeChatPaymentSuccess(text)) {
             cachePendingPayment(pkg, text);
+            showAfterSuccessIfDraftReady(pkg, text);
             return;
         }
 
@@ -76,9 +82,74 @@ public class BillAssistService extends AccessibilityService {
         return savedAt > 0 && pkg.equals(pendingPkg) && System.currentTimeMillis() - savedAt <= PENDING_MS;
     }
 
+    private boolean hasValidDraft(String pkg) {
+        SharedPreferences sp = getSharedPreferences("bill_assist_draft", MODE_PRIVATE);
+        long savedAt = sp.getLong("time", 0L);
+        String draftPkg = sp.getString("pkg", "");
+        return savedAt > 0 && pkg.equals(draftPkg) && System.currentTimeMillis() - savedAt <= PENDING_MS;
+    }
+
     private boolean fastMayBePayment(String t) {
         if (t == null) return false;
-        return t.contains("支付成功") || t.contains("确认收款") || t.contains("¥") || t.contains("元") || t.contains("转账") || t.contains("红包") || t.contains("账单") || t.contains("订单") || t.contains("付款") || t.contains("收款") || t.contains("消费");
+        return t.contains("支付成功") || t.contains("确认收款") || t.contains("¥") || t.contains("元") || t.contains("转账") || t.contains("红包") || t.contains("账单") || t.contains("订单") || t.contains("付款") || t.contains("收款") || t.contains("消费") || t.contains("转账给") || t.contains("转账金额") || t.contains("微信号");
+    }
+
+    private boolean isWeChatTransferInputPage(String t) {
+        if (t == null) return false;
+        boolean title = t.contains("转账给") || t.contains("转账金额");
+        boolean amount = t.contains("¥") || t.matches(".*(?:转账金额|金额).*[-+]?\\d+(?:\\.\\d{1,2})?.*");
+        boolean button = t.contains("转账");
+        boolean notSuccess = !t.contains("支付成功") && !t.contains("确认收款") && !t.contains("当前状态");
+        return title && amount && button && notSuccess;
+    }
+
+    private void cacheTransferDraft(String pkg, String text) {
+        double amount = extractTransferAmount(text);
+        if (amount <= 0) return;
+        String recipient = extractTransferTarget(text);
+        String wechatId = extractWechatId(text);
+        String message = extractTransferMessage(text);
+        SharedPreferences sp = getSharedPreferences("bill_assist_draft", MODE_PRIVATE);
+        sp.edit()
+                .putString("pkg", pkg)
+                .putString("raw", text)
+                .putFloat("amount", (float) amount)
+                .putString("recipient", recipient)
+                .putString("wechat_id", wechatId)
+                .putString("message", message)
+                .putLong("time", System.currentTimeMillis())
+                .apply();
+    }
+
+    private double extractTransferAmount(String text) {
+        if (text == null) return 0D;
+        Matcher m = Pattern.compile("¥\\s*([0-9]+(?:\\.[0-9]{1,2})?)").matcher(text);
+        if (m.find()) return toDouble(m.group(1));
+        m = Pattern.compile("转账金额\\s*([0-9]+(?:\\.[0-9]{1,2})?)").matcher(text);
+        if (m.find()) return toDouble(m.group(1));
+        return 0D;
+    }
+
+    private String extractTransferTarget(String text) {
+        if (text == null) return "";
+        Matcher m = Pattern.compile("转账给\\s*(.{1,28}?)(?:微信号|转账金额|¥|头像|$)").matcher(text);
+        if (m.find()) return cleanName(m.group(1));
+        return "";
+    }
+
+    private String extractWechatId(String text) {
+        if (text == null) return "";
+        Matcher m = Pattern.compile("微信号[:：]?\\s*([A-Za-z0-9_\\-]{4,32})").matcher(text);
+        if (m.find()) return m.group(1).trim();
+        return "";
+    }
+
+    private String extractTransferMessage(String text) {
+        if (text == null) return "";
+        Matcher m = Pattern.compile("(?:你好|留言|备注)\\s*([^转账]{0,28})").matcher(text);
+        if (text.contains("你好")) return "你好";
+        if (m.find()) return cleanName(m.group(1));
+        return "";
     }
 
     private void cachePendingPayment(String pkg, String text) {
@@ -92,6 +163,38 @@ public class BillAssistService extends AccessibilityService {
                 .putString("recipient", extractRecipient(text))
                 .putLong("time", System.currentTimeMillis())
                 .apply();
+    }
+
+    private void showAfterSuccessIfDraftReady(String pkg, String successText) {
+        SharedPreferences draft = getSharedPreferences("bill_assist_draft", MODE_PRIVATE);
+        long savedAt = draft.getLong("time", 0L);
+        String draftPkg = draft.getString("pkg", "");
+        if (savedAt <= 0 || !pkg.equals(draftPkg) || System.currentTimeMillis() - savedAt > PENDING_MS) return;
+
+        double draftAmount = draft.getFloat("amount", 0F);
+        double successAmount = extractTransferAmount(successText);
+        if (successAmount <= 0) {
+            MainActivity.Entry e = MainActivity.SmartParser.parseOne(successText);
+            if (e != null) successAmount = e.amount;
+        }
+        double amount = successAmount > 0 ? successAmount : draftAmount;
+        if (amount <= 0) return;
+
+        String recipient = bestName(draft.getString("recipient", ""), extractRecipient(successText));
+        String msg = draft.getString("message", "");
+        String wechatId = draft.getString("wechat_id", "");
+        String note = "微信转账" + (recipient.length() > 0 ? " - " + recipient : "") + (msg.length() > 0 ? "（" + msg + "）" : "");
+        String raw = draft.getString("raw", "") + "\n支付成功页确认：" + successText + (wechatId.length() > 0 ? "\n微信号：" + wechatId : "");
+
+        String key = pkg + "|draft-success|" + amount + "|" + note;
+        SharedPreferences repeat = getSharedPreferences("bill_assist_repeat", MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        if (key.equals(repeat.getString("last", "")) && now - repeat.getLong("last_time", 0L) < REPEAT_MS) return;
+        repeat.edit().putString("last", key).putLong("last_time", now).apply();
+        draft.edit().clear().apply();
+        getSharedPreferences("bill_assist_pending", MODE_PRIVATE).edit().clear().apply();
+
+        showPopup(pkg, raw, amount, note, "人情", "微信转账页+支付成功页识别");
     }
 
     private boolean tryCompletePendingFromChat(String pkg, String chatText) {
@@ -150,7 +253,7 @@ public class BillAssistService extends AccessibilityService {
     private boolean isWeChatPaymentSuccess(String t) {
         return t.contains("支付成功")
                 && t.matches(".*[-+]?\\d+(?:\\.\\d{1,2})?.*")
-                && ((t.contains("待") && t.contains("确认收款")) || t.contains("完成"));
+                && ((t.contains("待") && t.contains("确认收款")) || t.contains("完成") || t.contains("请收款"));
     }
 
     private boolean isBillDetail(String t) {
@@ -162,7 +265,7 @@ public class BillAssistService extends AccessibilityService {
 
     private boolean looksLikeChatPage(String t) {
         if (t == null) return false;
-        boolean chatWords = t.contains("发送") || t.contains("按住 说话") || t.contains("语音") || t.contains("表情") || t.contains("红包") || t.contains("转账") || t.contains("收款");
+        boolean chatWords = t.contains("发送") || t.contains("按住 说话") || t.contains("语音") || t.contains("表情") || t.contains("红包") || t.contains("转账") || t.contains("收款") || t.contains("[转账] 请收款");
         boolean notSuccessPage = !t.contains("支付成功") && !t.contains("完成");
         return chatWords && notSuccessPage;
     }
@@ -177,6 +280,8 @@ public class BillAssistService extends AccessibilityService {
     private String extractRecipient(String t) {
         if (t == null) return "";
         Matcher m = Pattern.compile("待(.{1,20}?)确认收款").matcher(t);
+        if (m.find()) return cleanName(m.group(1));
+        m = Pattern.compile("转账给\\s*(.{1,28}?)(?:微信号|转账金额|¥|头像|$)").matcher(t);
         if (m.find()) return cleanName(m.group(1));
         return "";
     }
@@ -202,16 +307,24 @@ public class BillAssistService extends AccessibilityService {
         if (s == null) return "";
         return s.replace("待", "")
                 .replace("确认收款", "")
+                .replace("微信号", "")
+                .replace("转账给", "")
+                .replace("转账金额", "")
                 .replace("微信", "")
                 .replace("支付成功", "")
                 .replace("¥", "")
+                .replaceAll("L[0-9A-Za-z_\\-]{4,32}", "")
                 .replaceAll("[0-9.]+", "")
                 .replaceAll("[：:，,。；;\n\r]", "")
                 .trim();
     }
 
     private boolean isUiWord(String s) {
-        return s.equals("返回") || s.equals("更多") || s.equals("发送") || s.equals("语音") || s.equals("表情") || s.equals("完成") || s.equals("支付成功") || s.equals("聊天信息") || s.equals("微信") || s.equals("按住说话") || s.equals("转账") || s.equals("红包");
+        return s.equals("返回") || s.equals("更多") || s.equals("发送") || s.equals("语音") || s.equals("表情") || s.equals("完成") || s.equals("支付成功") || s.equals("聊天信息") || s.equals("微信") || s.equals("按住说话") || s.equals("转账") || s.equals("红包") || s.equals("修改") || s.equals("头像") || s.equals("微信号");
+    }
+
+    private double toDouble(String s) {
+        try { return Double.parseDouble(s); } catch (Exception e) { return 0D; }
     }
 
     private void addEventText(AccessibilityEvent event, StringBuilder sb) {
@@ -221,7 +334,7 @@ public class BillAssistService extends AccessibilityService {
     }
 
     private void readNode(AccessibilityNodeInfo node, StringBuilder sb, Set<Integer> visited, int depth) {
-        if (node == null || depth > 8 || sb.length() > MAX_LEN) return;
+        if (node == null || depth > 9 || sb.length() > MAX_LEN) return;
         int id = System.identityHashCode(node);
         if (visited.contains(id)) return;
         visited.add(id);
