@@ -17,6 +17,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.util.HashSet;
 import java.util.List;
@@ -134,6 +135,8 @@ public class BillAssistService extends AccessibilityService {
         String wechatId = extractWechatId(text);
         String message = extractTransferMessage(text);
         SharedPreferences sp = getSharedPreferences("bill_assist_draft", MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        long lastTip = sp.getLong("draft_tip_time", 0L);
         sp.edit()
                 .putString("pkg", pkg)
                 .putString("raw", text)
@@ -141,8 +144,13 @@ public class BillAssistService extends AccessibilityService {
                 .putString("recipient", recipient)
                 .putString("wechat_id", wechatId)
                 .putString("message", message)
-                .putLong("time", System.currentTimeMillis())
+                .putLong("time", now)
+                .putLong("draft_tip_time", now)
                 .apply();
+        if (now - lastTip > 2500L) {
+            String note = "微信转账" + (recipient.length() > 0 ? " - " + recipient : "") + (message.length() > 0 ? "（" + message + "）" : "");
+            showDraftGlassOverlay(amount, note);
+        }
     }
 
     private double extractTransferAmount(String text) {
@@ -258,16 +266,7 @@ public class BillAssistService extends AccessibilityService {
         double amount = forcedAmount > 0 ? forcedAmount : (e == null ? 0D : e.amount);
 
         QuickNotificationHelper.showBillReview(this, raw, account, type, source, amount, note, category);
-        showGlassOverlay(raw, account, type, source, amount, note, category);
-
-        Intent i = buildQuickEntryIntent(raw, account, type, source, amount, note, category);
-        try {
-            startActivity(i);
-        } catch (Exception ignored) {
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                try { startActivity(i); } catch (Exception ignoredAgain) { }
-            }, 300);
-        }
+        showConfirmGlassOverlay(raw, account, type, source, amount, note, category);
     }
 
     private Intent buildQuickEntryIntent(String raw, String account, String type, String source, double amount, String note, String category) {
@@ -283,44 +282,77 @@ public class BillAssistService extends AccessibilityService {
         return i;
     }
 
-    private void showGlassOverlay(String raw, String account, String type, String source, double amount, String note, String category) {
+    private void showDraftGlassOverlay(double amount, String note) {
+        removeGlassOverlay();
+        overlayManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        if (overlayManager == null) return;
+        LinearLayout card = baseOverlayCard();
+        card.addView(overlayText("已识别转账页面", 17, Color.rgb(25, 28, 45), true));
+        card.addView(overlayText("¥" + String.format(Locale.CHINA, "%.2f", amount), 28, Color.rgb(20, 120, 72), true));
+        card.addView(overlayText(note == null || note.trim().isEmpty() ? "微信转账" : note.trim(), 14, Color.rgb(80, 84, 105), false));
+        card.addView(overlayText("付款成功后会弹出确认保存，不会跳回 App 首页", 12, Color.rgb(115, 120, 140), false));
+        Button ok = overlayButton("知道了", Color.argb(120, 255, 255, 255), Color.rgb(70, 74, 95));
+        ok.setOnClickListener(v -> removeGlassOverlay());
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, dp(44));
+        blp.setMargins(0, dp(10), 0, 0);
+        card.addView(ok, blp);
+        addOverlay(card, dp(78), 9000);
+    }
+
+    private void showConfirmGlassOverlay(String raw, String account, String type, String source, double amount, String note, String category) {
         removeGlassOverlay();
         overlayManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         if (overlayManager == null) return;
 
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(18), dp(16), dp(18), dp(16));
-        card.setBackground(glassBg(Color.argb(188, 255, 255, 255), dp(28)));
-        card.setElevation(dp(12));
-
-        TextView title = overlayText("识别到微信转账", 17, Color.rgb(25, 28, 45), true);
-        TextView amountView = overlayText("¥" + String.format(Locale.CHINA, "%.2f", amount), 30, Color.rgb(20, 120, 72), true);
-        TextView noteView = overlayText(note == null || note.trim().isEmpty() ? "微信转账" : note.trim(), 14, Color.rgb(80, 84, 105), false);
-        TextView tip = overlayText("点确认后进入记账页；也可在通知栏确认", 12, Color.rgb(115, 120, 140), false);
-        card.addView(title);
-        card.addView(amountView);
-        card.addView(noteView);
-        card.addView(tip);
+        LinearLayout card = baseOverlayCard();
+        card.addView(overlayText("识别到微信转账", 17, Color.rgb(25, 28, 45), true));
+        card.addView(overlayText("¥" + String.format(Locale.CHINA, "%.2f", amount), 30, Color.rgb(20, 120, 72), true));
+        card.addView(overlayText(note == null || note.trim().isEmpty() ? "微信转账" : note.trim(), 14, Color.rgb(80, 84, 105), false));
+        card.addView(overlayText("确认后直接保存并停留微信；需要修改可点通知栏", 12, Color.rgb(115, 120, 140), false));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER_VERTICAL);
         actions.setPadding(0, dp(10), 0, 0);
         Button cancel = overlayButton("稍后", Color.argb(90, 255, 255, 255), Color.rgb(70, 74, 95));
-        Button confirm = overlayButton("确认记账", Color.rgb(52, 199, 89), Color.WHITE);
+        Button confirm = overlayButton("保存", Color.rgb(52, 199, 89), Color.WHITE);
         cancel.setOnClickListener(v -> removeGlassOverlay());
         confirm.setOnClickListener(v -> {
+            saveDirect(amount, type, category, account, note, source);
             removeGlassOverlay();
-            Intent intent = buildQuickEntryIntent(raw, account, type, source, amount, note, category);
-            try { startActivity(intent); } catch (Exception ignored) { }
         });
         actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(46), 1));
         TextView gap = new TextView(this);
         actions.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
         actions.addView(confirm, new LinearLayout.LayoutParams(0, dp(46), 1));
         card.addView(actions);
+        addOverlay(card, dp(80), 18000);
+    }
 
+    private void saveDirect(double amount, String type, String category, String account, String note, String source) {
+        MainActivity.Entry entry = new MainActivity.Entry();
+        entry.amount = amount;
+        entry.type = type == null ? "支出" : type;
+        entry.category = category == null ? "人情" : category;
+        entry.account = account == null ? "微信" : account;
+        entry.note = note == null ? "微信转账" : note;
+        entry.source = source == null ? "无障碍悬浮确认" : source;
+        entry.time = System.currentTimeMillis();
+        new MainActivity.LedgerDb(this).insert(entry);
+        QuickNotificationHelper.show(this);
+        Toast.makeText(this, "已保存入账", Toast.LENGTH_SHORT).show();
+    }
+
+    private LinearLayout baseOverlayCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(18), dp(16), dp(18), dp(16));
+        card.setBackground(glassBg(Color.argb(188, 255, 255, 255), dp(28)));
+        card.setElevation(dp(12));
+        return card;
+    }
+
+    private void addOverlay(View card, int y, long autoDismissMs) {
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 dp(340),
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -329,15 +361,10 @@ public class BillAssistService extends AccessibilityService {
                 android.graphics.PixelFormat.TRANSLUCENT
         );
         lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        lp.y = dp(80);
-
+        lp.y = y;
         card.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                overlayDownX = event.getRawX();
-                overlayDownY = event.getRawY();
-                overlayStartX = lp.x;
-                overlayStartY = lp.y;
-                return false;
+                overlayDownX = event.getRawX(); overlayDownY = event.getRawY(); overlayStartX = lp.x; overlayStartY = lp.y; return false;
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE) {
                 lp.x = overlayStartX + (int) (event.getRawX() - overlayDownX);
@@ -347,14 +374,11 @@ public class BillAssistService extends AccessibilityService {
             }
             return false;
         });
-
         overlayView = card;
         try {
             overlayManager.addView(overlayView, lp);
-            new Handler(Looper.getMainLooper()).postDelayed(this::removeGlassOverlay, 18000);
-        } catch (Exception ignored) {
-            overlayView = null;
-        }
+            if (autoDismissMs > 0) new Handler(Looper.getMainLooper()).postDelayed(this::removeGlassOverlay, autoDismissMs);
+        } catch (Exception ignored) { overlayView = null; }
     }
 
     private void removeGlassOverlay() {
@@ -397,9 +421,7 @@ public class BillAssistService extends AccessibilityService {
         return g;
     }
 
-    private int dp(int v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
-    }
+    private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
 
     private boolean isPayRelatedPackage(String pkg) {
         String p = pkg.toLowerCase(Locale.ROOT);
@@ -487,9 +509,7 @@ public class BillAssistService extends AccessibilityService {
         return s.equals("返回") || s.equals("更多") || s.equals("发送") || s.equals("语音") || s.equals("表情") || s.equals("完成") || s.equals("支付成功") || s.equals("转账成功") || s.equals("聊天信息") || s.equals("微信") || s.equals("按住说话") || s.equals("转账") || s.equals("红包") || s.equals("修改") || s.equals("头像") || s.equals("微信号");
     }
 
-    private double toDouble(String s) {
-        try { return Double.parseDouble(s); } catch (Exception e) { return 0D; }
-    }
+    private double toDouble(String s) { try { return Double.parseDouble(s); } catch (Exception e) { return 0D; } }
 
     private void addEventText(AccessibilityEvent event, StringBuilder sb) {
         List<CharSequence> list = event.getText();
@@ -516,7 +536,5 @@ public class BillAssistService extends AccessibilityService {
         sb.append(' ').append(s);
     }
 
-    private String normalize(String s) {
-        return s == null ? "" : s.replace('\n', ' ').replace('\r', ' ').replaceAll("\\s+", " ").trim();
-    }
+    private String normalize(String s) { return s == null ? "" : s.replace('\n', ' ').replace('\r', ' ').replaceAll("\\s+", " ").trim(); }
 }
