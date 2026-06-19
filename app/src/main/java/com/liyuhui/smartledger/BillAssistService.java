@@ -1,6 +1,7 @@
 package com.liyuhui.smartledger;
 
 import android.accessibilityservice.AccessibilityService;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -57,6 +58,13 @@ public class BillAssistService extends AccessibilityService {
 
         String eventText = readEventText(event);
         long now = System.currentTimeMillis();
+
+        // 新思路：只要事件文本中出现绿色成功状态，立即进入快速确认，不再等待整页文本读取成功。
+        if (isSuccessKeyword(eventText)) {
+            handleSuccessFast(pkg, eventText);
+            return;
+        }
+
         if (eventText.equals(lastShortText) && now - lastEventAt < EVENT_THROTTLE_MS) return;
         lastShortText = eventText;
         lastEventAt = now;
@@ -139,6 +147,11 @@ public class BillAssistService extends AccessibilityService {
         return savedAt > 0 && pkg.equals(draftPkg) && System.currentTimeMillis() - savedAt <= PENDING_MS;
     }
 
+    private boolean isSuccessKeyword(String t) {
+        if (t == null) return false;
+        return t.contains("支付成功") || t.contains("转账成功") || t.contains("请收款") || t.contains("已支付") || t.contains("已付款");
+    }
+
     private boolean fastMayBePayment(String t) {
         if (t == null) return false;
         return t.contains("支付成功") || t.contains("转账成功") || t.contains("确认收款") || t.contains("请收款")
@@ -154,6 +167,64 @@ public class BillAssistService extends AccessibilityService {
                 || (t.contains("转账") && (t.contains("¥") || t.contains("￥") || t.contains("请收款") || t.contains("收款")));
     }
 
+    private void handleSuccessFast(String pkg, String eventText) {
+        String pageText = readCurrentWindowText(eventText);
+        String raw = pageText.length() >= eventText.length() ? pageText : eventText;
+
+        double amount = extractAmount(raw);
+        if (amount <= 0) amount = cachedAmount(pkg);
+
+        String recipient = bestName(cachedRecipient(pkg), extractTransferTarget(raw));
+        String msg = cachedMessage(pkg);
+        String note = buildNoteForPage(raw, recipient);
+        if ((note == null || note.equals("支付消费") || note.equals("自动识别记账")) && recipient.length() > 0) note = buildTransferNote(recipient, msg);
+
+        String type = inferTypeForPage(raw);
+        String category = inferCategoryForPage(raw, type, null);
+        if (raw.contains("转账") || raw.contains("请收款") || recipient.length() > 0) category = "人情";
+
+        EntryCandidate c = buildCandidate(pkg, raw, amount, note, category, "支付成功状态快速识别");
+        c.type = type;
+        c.category = category;
+        c.note = note;
+        c.amount = amount;
+        showConfirmForCandidate(c);
+    }
+
+    private double cachedAmount(String pkg) {
+        SharedPreferences draft = getSharedPreferences("bill_assist_draft", MODE_PRIVATE);
+        if (pkg.equals(draft.getString("pkg", "")) && System.currentTimeMillis() - draft.getLong("time", 0L) <= PENDING_MS) {
+            double v = draft.getFloat("amount", 0F);
+            if (v > 0) return v;
+        }
+        SharedPreferences pending = getSharedPreferences("bill_assist_pending", MODE_PRIVATE);
+        if (pkg.equals(pending.getString("pkg", "")) && System.currentTimeMillis() - pending.getLong("time", 0L) <= PENDING_MS) {
+            double v = pending.getFloat("amount", 0F);
+            if (v > 0) return v;
+        }
+        return 0D;
+    }
+
+    private String cachedRecipient(String pkg) {
+        SharedPreferences draft = getSharedPreferences("bill_assist_draft", MODE_PRIVATE);
+        if (pkg.equals(draft.getString("pkg", "")) && System.currentTimeMillis() - draft.getLong("time", 0L) <= PENDING_MS) {
+            return draft.getString("recipient", "");
+        }
+        SharedPreferences pending = getSharedPreferences("bill_assist_pending", MODE_PRIVATE);
+        if (pkg.equals(pending.getString("pkg", "")) && System.currentTimeMillis() - pending.getLong("time", 0L) <= PENDING_MS) {
+            return pending.getString("recipient", "");
+        }
+        return "";
+    }
+
+    private String cachedMessage(String pkg) {
+        SharedPreferences draft = getSharedPreferences("bill_assist_draft", MODE_PRIVATE);
+        if (pkg.equals(draft.getString("pkg", "")) && System.currentTimeMillis() - draft.getLong("time", 0L) <= PENDING_MS) {
+            return draft.getString("message", "");
+        }
+        return "";
+    }
+
     private boolean isWeChatTransferInputPage(String t) {
         if (t == null) return false;
         boolean notSuccess = !t.contains("支付成功") && !t.contains("转账成功") && !t.contains("确认收款") && !t.contains("当前状态");
@@ -165,10 +236,7 @@ public class BillAssistService extends AccessibilityService {
 
     private void cacheTransferDraft(String pkg, String text) {
         double amount = extractAmount(text);
-        if (amount <= 0) {
-            showDebugTextOverlay("读到了转账页，但没读到金额：\n" + shorten(text, 220));
-            return;
-        }
+        if (amount <= 0) return;
         String recipient = extractTransferTarget(text);
         String wechatId = extractWechatId(text);
         String message = extractTransferMessage(text);
@@ -185,7 +253,7 @@ public class BillAssistService extends AccessibilityService {
                 .putLong("time", now)
                 .putLong("draft_tip_time", now)
                 .apply();
-        if (now - lastTip > 2500L) {
+        if (now - lastTip > 3500L) {
             String note = buildTransferNote(recipient, message);
             showDraftGlassOverlay(amount, note, inferCategoryForPage(text, "支出", "人情"));
         }
@@ -208,12 +276,18 @@ public class BillAssistService extends AccessibilityService {
         SharedPreferences draft = getSharedPreferences("bill_assist_draft", MODE_PRIVATE);
         long savedAt = draft.getLong("time", 0L);
         String draftPkg = draft.getString("pkg", "");
-        if (savedAt <= 0 || !pkg.equals(draftPkg) || System.currentTimeMillis() - savedAt > PENDING_MS) return;
+        if (savedAt <= 0 || !pkg.equals(draftPkg) || System.currentTimeMillis() - savedAt > PENDING_MS) {
+            handleSuccessFast(pkg, successText);
+            return;
+        }
 
         double draftAmount = draft.getFloat("amount", 0F);
         double successAmount = extractAmount(successText);
         double amount = successAmount > 0 ? successAmount : draftAmount;
-        if (amount <= 0) return;
+        if (amount <= 0) {
+            handleSuccessFast(pkg, successText);
+            return;
+        }
 
         String recipient = bestName(draft.getString("recipient", ""), extractRecipient(successText));
         String msg = draft.getString("message", "");
@@ -263,21 +337,17 @@ public class BillAssistService extends AccessibilityService {
     private void manualRecognizeCurrentPage(String pkg) {
         String text = readCurrentWindowText("");
         if (text.length() < 2) {
-            showDebugTextOverlay("没有读到当前页面文字。请确认无障碍服务已重新开启。 ");
+            showDebugTextOverlay("没有读到当前页面文字。可直接点通知栏识别入口进入编辑页。 ");
             return;
         }
         double amount = extractAmount(text);
-        if (amount > 0) {
-            String type = inferTypeForPage(text);
-            String recipient = extractTransferTarget(text);
-            String note = buildNoteForPage(text, recipient);
-            String category = inferCategoryForPage(text, type, null);
-            EntryCandidate candidate = buildCandidate(pkg, text, amount, note, category, "手动强制识别当前页");
-            candidate.type = type;
-            showConfirmForCandidate(candidate);
-            return;
-        }
-        showDebugTextOverlay("已读取当前页，但没找到金额。读到的文字：\n" + shorten(text, 280));
+        String type = inferTypeForPage(text);
+        String recipient = extractTransferTarget(text);
+        String note = buildNoteForPage(text, recipient);
+        String category = inferCategoryForPage(text, type, null);
+        EntryCandidate candidate = buildCandidate(pkg, text, amount, note, category, "手动强制识别当前页");
+        candidate.type = type;
+        showConfirmForCandidate(candidate);
     }
 
     private EntryCandidate buildCandidate(String pkg, String raw, double forcedAmount, String forcedNote, String forcedCategory, String source) {
@@ -293,7 +363,7 @@ public class BillAssistService extends AccessibilityService {
     }
 
     private void showConfirmForCandidate(EntryCandidate c) {
-        if (c == null || c.amount <= 0) return;
+        if (c == null) return;
         String key = c.account + "|" + c.type + "|" + c.amount + "|" + c.note + "|" + c.source;
         if (key.equals(lastOverlayKey) && overlayView != null) return;
         lastOverlayKey = key;
@@ -307,7 +377,7 @@ public class BillAssistService extends AccessibilityService {
         if (m.find()) return Math.abs(toDouble(m.group(1)));
         m = Pattern.compile("(?:金额|转账金额|收款|付款|消费)\\s*([-+]?[0-9]+(?:\\.[0-9]{1,2})?)").matcher(text);
         if (m.find()) return Math.abs(toDouble(m.group(1)));
-        if (text.contains("转账") || text.contains("支付成功") || text.contains("转账成功") || text.contains("账单详情") || text.contains("二维码收款")) {
+        if (text.contains("转账") || text.contains("支付成功") || text.contains("转账成功") || text.contains("账单详情") || text.contains("二维码收款") || text.contains("请收款")) {
             m = Pattern.compile("(?:^|\\s)([-+]?[0-9]+\\.[0-9]{1,2})(?:\\s|$)").matcher(text);
             double best = 0D;
             while (m.find()) {
@@ -321,8 +391,8 @@ public class BillAssistService extends AccessibilityService {
 
     private String inferTypeForPage(String raw) {
         if (raw == null) return "支出";
-        if (raw.contains("收款") && !raw.contains("付款") && !raw.contains("待") && !raw.contains("请收款")) return "收入";
-        if (raw.contains("退款") || raw.contains("到账")) return "收入";
+        if (raw.contains("二维码收款") || raw.contains("收款方") || raw.contains("付款") || raw.contains("支付成功") || raw.contains("转账给") || raw.contains("请收款") || raw.contains("待") || raw.contains("消费")) return "支出";
+        if (raw.contains("退款") || raw.contains("到账") || raw.contains("已收款")) return "收入";
         return "支出";
     }
 
@@ -417,7 +487,7 @@ public class BillAssistService extends AccessibilityService {
     }
 
     private boolean isWeChatPaymentSuccess(String t) {
-        return (t.contains("支付成功") || t.contains("转账成功") || t.contains("请收款")) && extractAmount(t) > 0;
+        return isSuccessKeyword(t) && (extractAmount(t) > 0 || cachedAmount("com.tencent.mm") > 0);
     }
 
     private boolean isBillDetail(String t) {
@@ -468,7 +538,8 @@ public class BillAssistService extends AccessibilityService {
         card.addView(overlayText("已识别转账页面", 17, Color.rgb(25, 28, 45), true));
         card.addView(overlayText("¥" + String.format(Locale.CHINA, "%.2f", amount), 28, Color.rgb(20, 120, 72), true));
         card.addView(overlayText(note + " · " + category, 14, Color.rgb(80, 84, 105), false));
-        card.addView(overlayText("付款成功后会弹出底部确认保存", 12, Color.rgb(115, 120, 140), false));
+        card.addView(overlayText("付款成功后识别绿色成功状态", 12, Color.rgb(115, 120, 140), false));
+        card.setOnClickListener(v -> openEditPage(buildCandidate("com.tencent.mm", note, amount, note, category, "转账页缓存识别")));
         Button ok = overlayButton("知道了", Color.argb(120, 255, 255, 255), Color.rgb(70, 74, 95));
         ok.setOnClickListener(v -> removeGlassOverlay());
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, dp(44));
@@ -479,29 +550,53 @@ public class BillAssistService extends AccessibilityService {
 
     private void showConfirmGlassOverlay(EntryCandidate c) {
         LinearLayout card = baseOverlayCard();
-        card.addView(overlayText("确认记账", 17, Color.rgb(25, 28, 45), true));
-        card.addView(overlayText("¥" + String.format(Locale.CHINA, "%.2f", c.amount), 30, Color.rgb(20, 120, 72), true));
+        card.addView(overlayText(c.amount > 0 ? "识别到支付成功" : "识别到支付成功 · 请编辑", 17, Color.rgb(25, 28, 45), true));
+        card.addView(overlayText(c.amount > 0 ? "¥" + String.format(Locale.CHINA, "%.2f", c.amount) : "点此编辑补全金额", c.amount > 0 ? 30 : 20, c.amount > 0 ? Color.rgb(20, 120, 72) : Color.rgb(91, 95, 239), true));
         card.addView(overlayText(MainActivity.iconForCategory(c.category) + " " + c.category + " · " + c.account, 14, Color.rgb(80, 84, 105), true));
-        card.addView(overlayText(c.note == null || c.note.trim().isEmpty() ? "自动识别记账" : c.note.trim(), 13, Color.rgb(100, 105, 125), false));
-        card.addView(overlayText("底部确认，保存后停留当前页面", 12, Color.rgb(115, 120, 140), false));
+        card.addView(overlayText(c.note == null || c.note.trim().isEmpty() ? "点击卡片可编辑" : c.note.trim(), 13, Color.rgb(100, 105, 125), false));
+        card.addView(overlayText("点击卡片可编辑；保存后停留当前页面", 12, Color.rgb(115, 120, 140), false));
+        card.setOnClickListener(v -> openEditPage(c));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER_VERTICAL);
         actions.setPadding(0, dp(10), 0, 0);
         Button cancel = overlayButton("稍后", Color.argb(90, 255, 255, 255), Color.rgb(70, 74, 95));
-        Button confirm = overlayButton("保存", Color.rgb(52, 199, 89), Color.WHITE);
+        Button edit = overlayButton("编辑", Color.argb(120, 255, 255, 255), Color.rgb(91, 95, 239));
+        Button confirm = overlayButton(c.amount > 0 ? "保存" : "去编辑", Color.rgb(52, 199, 89), Color.WHITE);
         cancel.setOnClickListener(v -> removeGlassOverlay());
+        edit.setOnClickListener(v -> openEditPage(c));
         confirm.setOnClickListener(v -> {
-            saveDirect(c);
-            removeGlassOverlay();
+            if (c.amount > 0) {
+                saveDirect(c);
+                removeGlassOverlay();
+            } else {
+                openEditPage(c);
+            }
         });
         actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(46), 1));
-        TextView gap = new TextView(this);
-        actions.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
+        TextView gap1 = new TextView(this);
+        actions.addView(gap1, new LinearLayout.LayoutParams(dp(8), 1));
+        actions.addView(edit, new LinearLayout.LayoutParams(0, dp(46), 1));
+        TextView gap2 = new TextView(this);
+        actions.addView(gap2, new LinearLayout.LayoutParams(dp(8), 1));
         actions.addView(confirm, new LinearLayout.LayoutParams(0, dp(46), 1));
         card.addView(actions);
         showBottomOverlay(card, 22000);
+    }
+
+    private void openEditPage(EntryCandidate c) {
+        removeGlassOverlay();
+        Intent i = new Intent(this, QuickEntryActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        i.putExtra("raw_text", c.raw == null ? "" : c.raw);
+        i.putExtra("forced_account", c.account == null ? "微信" : c.account);
+        i.putExtra("forced_type", c.type == null ? "支出" : c.type);
+        i.putExtra("source", c.source == null ? "弹窗编辑确认" : c.source);
+        if (c.amount > 0) i.putExtra("forced_amount", c.amount);
+        if (c.note != null) i.putExtra("forced_note", c.note);
+        if (c.category != null) i.putExtra("forced_category", c.category);
+        try { startActivity(i); } catch (Exception ignored) { }
     }
 
     private void saveDirect(EntryCandidate c) {
