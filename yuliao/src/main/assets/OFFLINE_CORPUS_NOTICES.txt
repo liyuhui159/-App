@@ -1,0 +1,24 @@
+语聊离线语料来源与许可说明
+==========================
+
+本应用不会在离线模式中连接网络，也不会上传用户输入。
+
+1. ChatterBot Corpus
+   Repository: https://github.com/gunthercox/chatterbot-corpus
+   License: BSD 3-Clause License
+   Usage: 少量中文基础问答经过人工筛选、纠错和改写后作为补充候选。
+
+2. LCCC (Large-scale Cleaned Chinese Conversation)
+   Repository/Dataset: https://github.com/thu-coai/CDial-GPT
+   License: MIT（以数据集发布页和仓库许可为准）
+   Usage: 仅参考其开放域中文对话的意图分布与清洗方法；本 APK 不打包 LCCC 原始大规模社交媒体对话。
+
+3. CPED
+   Repository: https://github.com/scutcyr/CPED
+   License: Apache License 2.0
+   Usage: 仅参考情绪、对话行为、场景和人格分类体系；本 APK 不打包电视剧原始台词数据。
+
+4. 语聊项目内语料
+   大部分离线回复由本项目重新编写、清洗、去重和组合。通过意图基础语录、人设表达、聊天场景和回复长度形成大量候选。
+
+清洗规则包括：过滤广告、联系方式、隐私信息、人身攻击、色情低俗、违法引导、明显机翻、过时网络梗、上下文残缺和不适合直接发送的内容。
