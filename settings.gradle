@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = 'SmartLedgerNative'
 include ':app'
+include ':yuliao'
