@@ -1,0 +1,46 @@
+name: Build Yuliao APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/yuliao-ai-reply
+    paths:
+      - 'yuliao/**'
+      - 'settings.gradle'
+      - 'build.gradle'
+      - '.github/workflows/build-yuliao.yml'
+  pull_request:
+    paths:
+      - 'yuliao/**'
+      - 'settings.gradle'
+      - 'build.gradle'
+      - '.github/workflows/build-yuliao.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :yuliao:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuliao-debug-apk
+          path: yuliao/build/outputs/apk/debug/yuliao-debug.apk
+          if-no-files-found: error
