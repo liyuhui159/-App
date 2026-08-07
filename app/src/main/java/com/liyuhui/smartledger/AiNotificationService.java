@@ -4,13 +4,16 @@ import android.content.SharedPreferences;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 
-import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
-/** Uses AI for ambiguous payment notifications and falls back to the original local parser. */
+/** Automatic bookkeeping service: local facts first, merchant memory/rules second, AI category last. */
 public class AiNotificationService extends NotificationListenerService {
-    private static final String DEDUPE_PREFS = "ai_notification_dedupe";
-    private static final long DEDUPE_WINDOW_MS = 90000L;
+    private static final String DEDUPE_PREFS = "ai_notification_dedupe_v2";
+    private static final long DEDUPE_WINDOW_MS = 180000L;
+    private final Set<String> pending = ConcurrentHashMap.newKeySet();
 
     @Override public void onListenerConnected() {
         super.onListenerConnected();
@@ -21,50 +24,78 @@ public class AiNotificationService extends NotificationListenerService {
         if (sbn == null || sbn.getNotification() == null || sbn.getNotification().extras == null) return;
         String pkg = sbn.getPackageName() == null ? "" : sbn.getPackageName().toLowerCase(Locale.ROOT);
         String raw = notificationText(sbn).trim();
-        if (!isPayPackage(pkg) || !looksLikePayment(raw) || isDuplicate(pkg, raw)) return;
-        remember(pkg, raw);
+        if (!isPayPackage(pkg) || !PaymentNotificationParser.looksLikePayment(raw)) return;
 
-        MainActivity.Entry local = MainActivity.SmartParser.parseOne(raw);
-        AiLedgerClient.Config config = AiLedgerClient.loadConfig(this);
-        if (!config.enabled || !config.notificationEnabled || !config.hasApiKey) {
-            insertLocal(local, pkg, raw);
+        String fingerprint = fingerprint(pkg, raw);
+        if (isDuplicate(fingerprint) || !pending.add(fingerprint)) return;
+
+        MainActivity.Entry entry = PaymentNotificationParser.parse(pkg, raw);
+        if (entry == null) {
+            pending.remove(fingerprint);
             return;
         }
 
-        AiLedgerClient.parseAsync(this, raw, new AiLedgerClient.Callback() {
-            @Override public void onSuccess(List<MainActivity.Entry> entries, String modelText) {
-                if (entries == null || entries.isEmpty()) {
-                    insertLocal(local, pkg, raw);
-                    return;
-                }
-                MainActivity.LedgerDb db = new MainActivity.LedgerDb(AiNotificationService.this);
-                int inserted = 0;
-                for (MainActivity.Entry e : entries) {
-                    if (e == null || e.amount <= 0) continue;
-                    if ("其他".equals(e.account)) e.account = accountFromPackage(pkg);
-                    if (e.note == null || e.note.trim().isEmpty()) e.note = compact(raw);
-                    e.source = "通知AI自动记账";
-                    if (db.insert(e) > 0) inserted++;
-                    if (inserted >= 5) break;
-                }
-                if (inserted == 0) insertLocal(local, pkg, raw);
-                else QuickNotificationHelper.show(AiNotificationService.this);
-            }
+        String merchant = MerchantCategoryStore.extractMerchant(raw);
+        if (!merchant.isEmpty()) entry.note = merchant;
 
-            @Override public void onFailure(String message) {
-                insertLocal(local, pkg, raw);
-            }
-        });
+        String remembered = MerchantCategoryStore.find(this, merchant);
+        if (!remembered.isEmpty()) {
+            entry.category = remembered;
+            entry.source = "通知商家记忆分类";
+            insertAndFinish(entry, merchant, fingerprint, true);
+            return;
+        }
+
+        String strong = LedgerCategories.inferStrong(merchant + " " + raw, entry.type);
+        if (!"其他".equals(strong)) {
+            entry.category = strong;
+            entry.source = "通知本地商家分类";
+            insertAndFinish(entry, merchant, fingerprint, true);
+            return;
+        }
+
+        AiLedgerClient.Config config = AiLedgerClient.loadConfig(this);
+        if (!config.enabled || !config.notificationEnabled || !config.hasApiKey) {
+            entry.category = "其他";
+            entry.source = "通知自动记账·待分类";
+            insertAndFinish(entry, merchant, fingerprint, false);
+            return;
+        }
+
+        AiLedgerClient.classifyAsync(this, merchant, raw, entry.type,
+                new AiLedgerClient.CategoryCallback() {
+                    @Override public void onSuccess(AiLedgerClient.CategoryResult result) {
+                        entry.category = result.category;
+                        if (!result.merchant.isEmpty() && merchant.isEmpty()) entry.note = result.merchant;
+                        entry.source = "通知AI商家分类";
+                        insertAndFinish(entry,
+                                merchant.isEmpty() ? result.merchant : merchant,
+                                fingerprint, true);
+                    }
+
+                    @Override public void onFailure(String message) {
+                        entry.category = "其他";
+                        entry.source = "通知自动记账·AI未确认";
+                        insertAndFinish(entry, merchant, fingerprint, false);
+                    }
+                });
     }
 
-    private void insertLocal(MainActivity.Entry entry, String pkg, String raw) {
-        if (entry == null || entry.amount <= 0) return;
-        entry.source = "通知本地规则兜底";
-        if ("其他".equals(entry.account)) entry.account = accountFromPackage(pkg);
-        if ("其他".equals(entry.category)) entry.category = MainActivity.SmartParser.inferCategory(raw, entry.type);
-        if (entry.note == null || entry.note.trim().isEmpty()) entry.note = compact(raw);
-        new MainActivity.LedgerDb(this).insert(entry);
-        QuickNotificationHelper.show(this);
+    private void insertAndFinish(MainActivity.Entry entry, String merchant,
+                                 String fingerprint, boolean rememberCategory) {
+        try {
+            if (entry.note == null || entry.note.trim().isEmpty()) entry.note = "支付通知";
+            long id = new MainActivity.LedgerDb(this).insert(entry);
+            if (id > 0) {
+                if (rememberCategory && !merchant.isEmpty()) {
+                    MerchantCategoryStore.remember(this, merchant, entry.category);
+                }
+                rememberFingerprint(fingerprint);
+                QuickNotificationHelper.show(this);
+            }
+        } finally {
+            pending.remove(fingerprint);
+        }
     }
 
     private String notificationText(StatusBarNotification sbn) {
@@ -79,49 +110,38 @@ public class AiNotificationService extends NotificationListenerService {
         return value == null ? "" : value.toString();
     }
 
-    private boolean isDuplicate(String pkg, String raw) {
-        String key = Integer.toHexString((pkg + "|" + raw).hashCode());
-        SharedPreferences p = getSharedPreferences(DEDUPE_PREFS, MODE_PRIVATE);
-        return key.equals(p.getString("key", ""))
-                && System.currentTimeMillis() - p.getLong("time", 0L) < DEDUPE_WINDOW_MS;
+    private boolean isDuplicate(String fingerprint) {
+        SharedPreferences preferences = getSharedPreferences(DEDUPE_PREFS, MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        boolean duplicate = false;
+        SharedPreferences.Editor editor = preferences.edit();
+        for (Map.Entry<String, ?> item : preferences.getAll().entrySet()) {
+            long time = item.getValue() instanceof Number
+                    ? ((Number) item.getValue()).longValue() : 0L;
+            if (now - time >= DEDUPE_WINDOW_MS) {
+                editor.remove(item.getKey());
+            } else if (item.getKey().equals("fp_" + fingerprint)) {
+                duplicate = true;
+            }
+        }
+        editor.apply();
+        return duplicate;
     }
 
-    private void remember(String pkg, String raw) {
-        String key = Integer.toHexString((pkg + "|" + raw).hashCode());
+    private void rememberFingerprint(String fingerprint) {
         getSharedPreferences(DEDUPE_PREFS, MODE_PRIVATE).edit()
-                .putString("key", key)
-                .putLong("time", System.currentTimeMillis())
-                .apply();
+                .putLong("fp_" + fingerprint, System.currentTimeMillis()).apply();
     }
 
-    private boolean isPayPackage(String p) {
-        return p.contains("tencent.mm") || p.contains("alipay") || p.contains("unionpay")
-                || p.contains("bank") || p.contains("cmb") || p.contains("icbc")
-                || p.contains("ccb") || p.contains("abc") || p.contains("boc");
+    private String fingerprint(String pkg, String raw) {
+        return Integer.toHexString((pkg + "|" + raw).hashCode());
     }
 
-    private boolean looksLikePayment(String s) {
-        if (s == null || s.trim().isEmpty()) return false;
-        boolean money = s.contains("¥") || s.contains("￥") || s.contains("元") || s.contains("金额")
-                || s.matches("(?s).*(?:支付|付款|消费|收款|到账|退款|转账|红包).*[0-9]+(?:\\.[0-9]{1,2})?.*");
-        boolean word = s.contains("支付") || s.contains("付款") || s.contains("消费") || s.contains("收款")
-                || s.contains("到账") || s.contains("退款") || s.contains("转账") || s.contains("红包")
-                || s.contains("订单") || s.contains("扣款");
-        boolean bad = s.contains("Bytes/s") || s.contains("KiB/s") || s.contains("MiB/s")
-                || s.contains("VPN") || s.contains("HUAWEI WATCH") || s.contains("已连接")
-                || s.contains("验证码") || s.contains("登录确认") || s.contains("US -");
-        return money && word && !bad;
-    }
-
-    private String accountFromPackage(String p) {
-        if (p.contains("tencent.mm")) return "微信";
-        if (p.contains("alipay")) return "支付宝";
-        return "银行卡";
-    }
-
-    private String compact(String raw) {
-        if (raw == null) return "支付通知";
-        String s = raw.replace('\n', ' ').replace('\r', ' ').replaceAll("\\s+", " ").trim();
-        return s.length() > 100 ? s.substring(0, 100) + "…" : s;
+    private boolean isPayPackage(String packageName) {
+        return packageName.contains("tencent.mm") || packageName.contains("alipay")
+                || packageName.contains("unionpay") || packageName.contains("bank")
+                || packageName.contains("cmb") || packageName.contains("icbc")
+                || packageName.contains("ccb") || packageName.contains("abc")
+                || packageName.contains("boc");
     }
 }
