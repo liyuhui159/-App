@@ -15,15 +15,11 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** OpenAI-compatible AI classifier with strict validation and local-rule fallback support. */
+/** OpenAI-compatible merchant classifier. Amount, account and transaction time stay local. */
 public final class AiLedgerClient {
     public static final String PREFS = "ai_ledger_settings";
     public static final String KEY_ENABLED = "enabled";
@@ -34,19 +30,33 @@ public final class AiLedgerClient {
 
     public static final String DEFAULT_ENDPOINT = "https://api.openai.com/v1/responses";
     public static final String DEFAULT_MODEL = "gpt-5-mini";
-    public static final float DEFAULT_MIN_CONFIDENCE = 0.62f;
+    public static final float DEFAULT_MIN_CONFIDENCE = 0.68f;
 
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 30000;
-    private static final int MAX_INPUT_CHARS = 6000;
+    private static final int MAX_RAW_CHARS = 1800;
     private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(2);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private AiLedgerClient() { }
 
-    public interface Callback {
-        void onSuccess(List<MainActivity.Entry> entries, String modelText);
+    public interface CategoryCallback {
+        void onSuccess(CategoryResult result);
         void onFailure(String message);
+    }
+
+    public static final class CategoryResult {
+        public final String category;
+        public final String merchant;
+        public final double confidence;
+        public final String reason;
+
+        CategoryResult(String category, String merchant, double confidence, String reason) {
+            this.category = category;
+            this.merchant = merchant;
+            this.confidence = confidence;
+            this.reason = reason;
+        }
     }
 
     public static final class Config {
@@ -59,7 +69,8 @@ public final class AiLedgerClient {
     }
 
     public static Config loadConfig(Context context) {
-        SharedPreferences p = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        SharedPreferences p = context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         Config c = new Config();
         c.enabled = p.getBoolean(KEY_ENABLED, true);
         c.notificationEnabled = p.getBoolean(KEY_NOTIFICATION_ENABLED, true);
@@ -73,20 +84,22 @@ public final class AiLedgerClient {
     public static void saveConfig(Context context, boolean enabled, boolean notificationEnabled,
                                   String endpoint, String model, float minConfidence,
                                   String newApiKey) throws Exception {
-        endpoint = endpoint == null ? "" : endpoint.trim();
-        model = model == null ? "" : model.trim();
-        if (endpoint.isEmpty()) endpoint = DEFAULT_ENDPOINT;
-        if (model.isEmpty()) model = DEFAULT_MODEL;
+        String safeEndpoint = endpoint == null ? "" : endpoint.trim();
+        String safeModel = model == null ? "" : model.trim();
+        if (safeEndpoint.isEmpty()) safeEndpoint = DEFAULT_ENDPOINT;
+        if (safeModel.isEmpty()) safeModel = DEFAULT_MODEL;
         minConfidence = Math.max(0.1f, Math.min(1f, minConfidence));
         context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .putBoolean(KEY_ENABLED, enabled)
                 .putBoolean(KEY_NOTIFICATION_ENABLED, notificationEnabled)
-                .putString(KEY_ENDPOINT, endpoint)
-                .putString(KEY_MODEL, model)
+                .putString(KEY_ENDPOINT, safeEndpoint)
+                .putString(KEY_MODEL, safeModel)
                 .putFloat(KEY_MIN_CONFIDENCE, minConfidence)
                 .apply();
-        if (newApiKey != null && !newApiKey.trim().isEmpty()) SecureApiKeyStore.save(context, newApiKey);
+        if (newApiKey != null && !newApiKey.trim().isEmpty()) {
+            SecureApiKeyStore.save(context, newApiKey.trim());
+        }
     }
 
     public static void clearApiKey(Context context) {
@@ -99,20 +112,26 @@ public final class AiLedgerClient {
                 && c.model != null && !c.model.trim().isEmpty();
     }
 
-    public static void parseAsync(Context context, String raw, Callback callback) {
+    public static void classifyAsync(Context context, String merchant, String raw,
+                                     String transactionType, CategoryCallback callback) {
         Context app = context.getApplicationContext();
         EXECUTOR.execute(() -> {
             try {
                 Config config = loadConfig(app);
-                if (!config.enabled) throw new IllegalStateException("AI 功能未开启");
+                if (!config.enabled) throw new IllegalStateException("AI 分类未开启");
                 String apiKey = SecureApiKeyStore.load(app);
                 if (apiKey.isEmpty()) throw new IllegalStateException("尚未填写 API Key");
-                if (raw == null || raw.trim().isEmpty()) throw new IllegalArgumentException("账单文字不能为空");
-                String safeRaw = raw.trim();
-                if (safeRaw.length() > MAX_INPUT_CHARS) safeRaw = safeRaw.substring(0, MAX_INPUT_CHARS);
-                String modelText = request(config, apiKey, safeRaw);
-                List<MainActivity.Entry> entries = parseModelJson(modelText, config.minConfidence);
-                MAIN.post(() -> callback.onSuccess(entries, modelText));
+                String safeMerchant = merchant == null ? "" : merchant.trim();
+                String safeRaw = raw == null ? "" : raw.trim();
+                if (safeRaw.length() > MAX_RAW_CHARS) safeRaw = safeRaw.substring(0, MAX_RAW_CHARS);
+                if (safeMerchant.isEmpty()) safeMerchant = MerchantCategoryStore.extractMerchant(safeRaw);
+                if (safeMerchant.isEmpty() && safeRaw.isEmpty()) {
+                    throw new IllegalArgumentException("没有可用于分类的商家信息");
+                }
+                String modelText = request(config, apiKey,
+                        buildPrompt(safeMerchant, safeRaw, transactionType));
+                CategoryResult result = parseCategory(modelText, config.minConfidence);
+                MAIN.post(() -> callback.onSuccess(result));
             } catch (Exception e) {
                 String message = readableError(e);
                 MAIN.post(() -> callback.onFailure(message));
@@ -120,9 +139,20 @@ public final class AiLedgerClient {
         });
     }
 
-    private static String request(Config config, String apiKey, String raw) throws Exception {
-        URL url = new URL(config.endpoint);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+    private static String request(Config config, String apiKey, String prompt) throws Exception {
+        try {
+            return performRequest(config, apiKey, prompt, true);
+        } catch (HttpStatusException e) {
+            if (e.code == 400 || e.code == 422) {
+                return performRequest(config, apiKey, prompt, false);
+            }
+            throw e;
+        }
+    }
+
+    private static String performRequest(Config config, String apiKey, String prompt,
+                                         boolean structuredOutput) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(config.endpoint).openConnection();
         connection.setRequestMethod("POST");
         connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
         connection.setReadTimeout(READ_TIMEOUT_MS);
@@ -131,58 +161,125 @@ public final class AiLedgerClient {
         connection.setRequestProperty("Accept", "application/json");
         connection.setRequestProperty("Authorization", "Bearer " + apiKey);
 
-        JSONObject body = buildRequestBody(config, raw);
+        JSONObject body = buildRequestBody(config, prompt, structuredOutput);
         byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
         connection.setFixedLengthStreamingMode(bytes.length);
-        try (OutputStream os = connection.getOutputStream()) {
-            os.write(bytes);
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(bytes);
         }
 
         int code = connection.getResponseCode();
-        String response = readAll(code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream());
+        String response = readAll(code >= 200 && code < 300
+                ? connection.getInputStream() : connection.getErrorStream());
         connection.disconnect();
         if (code < 200 || code >= 300) {
-            throw new IllegalStateException("接口返回 HTTP " + code + "：" + shorten(response, 360));
+            throw new HttpStatusException(code,
+                    "接口返回 HTTP " + code + "：" + shorten(response, 360));
         }
-        if (response == null || response.trim().isEmpty()) throw new IllegalStateException("接口返回内容为空");
+        if (response == null || response.trim().isEmpty()) {
+            throw new IllegalStateException("接口返回内容为空");
+        }
         return extractModelText(new JSONObject(response), config.endpoint);
     }
 
-    private static JSONObject buildRequestBody(Config config, String raw) throws Exception {
+    private static JSONObject buildRequestBody(Config config, String prompt,
+                                               boolean structuredOutput) throws Exception {
         JSONObject body = new JSONObject();
         body.put("model", config.model);
-        String instruction = buildPrompt(raw);
-        if (config.endpoint.toLowerCase(Locale.ROOT).contains("/responses")) {
-            body.put("input", instruction);
+        boolean responses = config.endpoint.toLowerCase(Locale.ROOT).contains("/responses");
+        if (responses) {
+            body.put("input", prompt);
+            if (structuredOutput) {
+                body.put("text", new JSONObject().put("format", schemaFormat()));
+            }
         } else {
             JSONArray messages = new JSONArray();
-            messages.put(new JSONObject().put("role", "system").put("content", systemInstruction()));
-            messages.put(new JSONObject().put("role", "user").put("content", userInstruction(raw)));
+            messages.put(new JSONObject().put("role", "system")
+                    .put("content", systemInstruction()));
+            messages.put(new JSONObject().put("role", "user")
+                    .put("content", prompt));
             body.put("messages", messages);
+            if (structuredOutput) {
+                body.put("response_format", new JSONObject()
+                        .put("type", "json_schema")
+                        .put("json_schema", schemaPayload()));
+            }
         }
         return body;
     }
 
-    private static String buildPrompt(String raw) {
-        return systemInstruction() + "\n\n" + userInstruction(raw);
+    private static JSONObject schemaFormat() throws Exception {
+        return new JSONObject()
+                .put("type", "json_schema")
+                .put("name", "merchant_category")
+                .put("description", "Classify a payment merchant into one bookkeeping category")
+                .put("strict", true)
+                .put("schema", categorySchema());
+    }
+
+    private static JSONObject schemaPayload() throws Exception {
+        return new JSONObject()
+                .put("name", "merchant_category")
+                .put("description", "Classify a payment merchant into one bookkeeping category")
+                .put("strict", true)
+                .put("schema", categorySchema());
+    }
+
+    private static JSONObject categorySchema() throws Exception {
+        JSONArray categoryValues = new JSONArray();
+        for (String category : LedgerCategories.ALL) categoryValues.put(category);
+        JSONObject properties = new JSONObject()
+                .put("category", new JSONObject().put("type", "string").put("enum", categoryValues))
+                .put("merchant", new JSONObject().put("type", "string"))
+                .put("confidence", new JSONObject().put("type", "number")
+                        .put("minimum", 0).put("maximum", 1))
+                .put("reason", new JSONObject().put("type", "string"));
+        return new JSONObject()
+                .put("type", "object")
+                .put("properties", properties)
+                .put("required", new JSONArray()
+                        .put("category").put("merchant").put("confidence").put("reason"))
+                .put("additionalProperties", false);
+    }
+
+    private static String buildPrompt(String merchant, String raw, String transactionType) {
+        return systemInstruction() + "\n\n"
+                + "收支类型：" + ("收入".equals(transactionType) ? "收入" : "支出") + "\n"
+                + "提取到的商家名称：" + (merchant.isEmpty() ? "未明确" : merchant) + "\n"
+                + "付款通知原文：\n" + raw;
     }
 
     private static String systemInstruction() {
-        return "你是个人记账账单识别器。只输出严格 JSON，不要 Markdown、解释或代码块。"
-                + "判断文本是否包含真实已发生或明确待确认的资金交易，排除网速、验证码、广告、余额展示、物流和普通聊天。"
-                + "输出格式必须是：{\"entries\":[{\"is_bill\":true,\"amount\":18.5,\"type\":\"支出\","
-                + "\"category\":\"餐饮\",\"account\":\"微信\",\"note\":\"午餐\","
-                + "\"date\":\"2026-08-07\",\"confidence\":0.95,\"reason\":\"支付成功\"}]}。"
-                + "没有账单时输出 {\"entries\":[]}。"
-                + "type 只能是收入或支出；category 只能是餐饮、交通、购物、住房、学习、医疗、娱乐、通讯、人情、工资、退款、其他；"
-                + "account 只能是微信、支付宝、银行卡、信用卡、现金、其他。金额必须是正数。"
-                + "转账和红包需结合上下文判断收入或支出，不要仅凭出现‘收款’二字就判为收入。"
-                + "同一笔交易的标题、正文、时间、订单号不要拆成多笔。";
+        return "你是自动记账中的商家消费分类器。只判断消费品类，不要重新提取金额、账户或日期。"
+                + "主要依据商家名称、店铺名称和业务类型分类。"
+                + "分类只能从：餐饮、水果、生鲜、日用品、购物、交通、住房、医疗、学习、娱乐、通讯、人情、工资、退款、其他 中选择。"
+                + "示例：百果园、鲜丰水果、水果店归水果；饭店、外卖、奶茶店归餐饮；菜市场、肉铺归生鲜；"
+                + "便利店和普通超市优先归日用品；淘宝、服饰店、数码店归购物。"
+                + "无法从商家信息可靠判断时必须返回其他并降低 confidence。"
+                + "只输出 JSON，不要 Markdown 或额外解释。";
     }
 
-    private static String userInstruction(String raw) {
-        String today = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date());
-        return "今天日期：" + today + "。请识别以下账单文本：\n" + raw;
+    private static CategoryResult parseCategory(String modelText, float minConfidence) throws Exception {
+        String json = cleanJson(modelText);
+        JSONObject value = new JSONObject(json);
+        if (!value.has("confidence")) {
+            throw new IllegalStateException("AI 返回结果缺少 confidence，已拒绝自动入账");
+        }
+        double confidence = number(value.opt("confidence"), -1d);
+        if (confidence < 0 || confidence > 1) {
+            throw new IllegalStateException("AI 返回的 confidence 无效");
+        }
+        String category = value.optString("category", "").trim();
+        if (!LedgerCategories.isAllowed(category)) {
+            throw new IllegalStateException("AI 返回了不支持的消费分类");
+        }
+        if (confidence < minConfidence) {
+            throw new IllegalStateException("AI 分类置信度不足（"
+                    + String.format(Locale.CHINA, "%.0f%%", confidence * 100d) + "）");
+        }
+        String merchant = shorten(value.optString("merchant", "").trim(), 60);
+        String reason = shorten(value.optString("reason", "").trim(), 100);
+        return new CategoryResult(category, merchant, confidence, reason);
     }
 
     private static String extractModelText(JSONObject response, String endpoint) throws Exception {
@@ -191,7 +288,7 @@ public final class AiLedgerClient {
 
         JSONArray output = response.optJSONArray("output");
         if (output != null) {
-            StringBuilder sb = new StringBuilder();
+            StringBuilder text = new StringBuilder();
             for (int i = 0; i < output.length(); i++) {
                 JSONObject item = output.optJSONObject(i);
                 if (item == null) continue;
@@ -200,11 +297,11 @@ public final class AiLedgerClient {
                 for (int j = 0; j < content.length(); j++) {
                     JSONObject part = content.optJSONObject(j);
                     if (part == null) continue;
-                    String text = part.optString("text", "");
-                    if (!text.isEmpty()) sb.append(text);
+                    String piece = part.optString("text", "");
+                    if (!piece.isEmpty()) text.append(piece);
                 }
             }
-            if (sb.length() > 0) return sb.toString();
+            if (text.length() > 0) return text.toString();
         }
 
         JSONArray choices = response.optJSONArray("choices");
@@ -216,120 +313,69 @@ public final class AiLedgerClient {
                     Object content = message.opt("content");
                     if (content instanceof String) return (String) content;
                     if (content instanceof JSONArray) {
-                        StringBuilder sb = new StringBuilder();
+                        StringBuilder text = new StringBuilder();
                         JSONArray parts = (JSONArray) content;
                         for (int i = 0; i < parts.length(); i++) {
                             JSONObject part = parts.optJSONObject(i);
-                            if (part != null) sb.append(part.optString("text", ""));
+                            if (part != null) text.append(part.optString("text", ""));
                         }
-                        if (sb.length() > 0) return sb.toString();
+                        if (text.length() > 0) return text.toString();
                     }
                 }
-                String text = choice.optString("text", "");
-                if (!text.isEmpty()) return text;
+                String plain = choice.optString("text", "");
+                if (!plain.isEmpty()) return plain;
             }
         }
-        throw new IllegalStateException("无法从接口响应中读取模型文本，请检查接口地址是否兼容 Responses 或 Chat Completions：" + endpoint);
-    }
-
-    private static List<MainActivity.Entry> parseModelJson(String text, float minConfidence) throws Exception {
-        String json = cleanJson(text);
-        JSONArray array;
-        if (json.startsWith("[")) {
-            array = new JSONArray(json);
-        } else {
-            JSONObject root = new JSONObject(json);
-            array = root.optJSONArray("entries");
-            if (array == null) array = new JSONArray();
-        }
-
-        List<MainActivity.Entry> entries = new ArrayList<>();
-        for (int i = 0; i < array.length(); i++) {
-            JSONObject o = array.optJSONObject(i);
-            if (o == null || !o.optBoolean("is_bill", true)) continue;
-            double confidence = number(o.opt("confidence"), 1d);
-            if (confidence < minConfidence) continue;
-            double amount = Math.abs(number(o.opt("amount"), 0d));
-            if (amount <= 0 || amount >= 100000000d) continue;
-
-            MainActivity.Entry e = new MainActivity.Entry();
-            e.amount = amount;
-            e.type = "收入".equals(o.optString("type")) ? "收入" : "支出";
-            e.category = normalizeCategory(o.optString("category", "其他"));
-            e.account = normalizeAccount(o.optString("account", "其他"));
-            e.note = shorten(o.optString("note", "AI识别账单").trim(), 100);
-            if (e.note.isEmpty()) e.note = "AI识别账单";
-            e.time = parseDate(o.optString("date", ""));
-            e.source = "AI智能解析";
-            entries.add(e);
-        }
-        return entries;
+        throw new IllegalStateException("无法从接口响应中读取分类结果，请检查接口地址：" + endpoint);
     }
 
     private static String cleanJson(String text) {
         if (text == null) return "{}";
-        String s = text.trim();
-        s = s.replace("```json", "").replace("```JSON", "").replace("```", "").trim();
-        int objectStart = s.indexOf('{');
-        int arrayStart = s.indexOf('[');
-        if (arrayStart >= 0 && (objectStart < 0 || arrayStart < objectStart)) {
-            int end = s.lastIndexOf(']');
-            if (end > arrayStart) return s.substring(arrayStart, end + 1);
-        }
-        if (objectStart >= 0) {
-            int end = s.lastIndexOf('}');
-            if (end > objectStart) return s.substring(objectStart, end + 1);
-        }
-        return s;
-    }
-
-    private static String normalizeCategory(String value) {
-        for (String c : MainActivity.CATEGORIES) if (c.equals(value)) return c;
-        return "其他";
-    }
-
-    private static String normalizeAccount(String value) {
-        for (String a : MainActivity.ACCOUNTS) if (a.equals(value)) return a;
-        return "其他";
-    }
-
-    private static long parseDate(String value) {
-        if (value != null && !value.trim().isEmpty()) {
-            try {
-                SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA);
-                f.setLenient(false);
-                Date d = f.parse(value.trim());
-                if (d != null) return d.getTime();
-            } catch (Exception ignored) { }
-        }
-        return System.currentTimeMillis();
+        String value = text.trim().replace("```json", "")
+                .replace("```JSON", "").replace("```", "").trim();
+        int start = value.indexOf('{');
+        int end = value.lastIndexOf('}');
+        return start >= 0 && end > start ? value.substring(start, end + 1) : value;
     }
 
     private static double number(Object value, double fallback) {
         if (value instanceof Number) return ((Number) value).doubleValue();
-        try { return Double.parseDouble(String.valueOf(value)); } catch (Exception ignored) { return fallback; }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private static String readAll(InputStream stream) throws Exception {
         if (stream == null) return "";
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+        StringBuilder result = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(stream, StandardCharsets.UTF_8))) {
             String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
+            while ((line = reader.readLine()) != null) result.append(line);
         }
-        return sb.toString();
+        return result.toString();
     }
 
-    private static String readableError(Exception e) {
-        String message = e.getMessage();
-        if (message == null || message.trim().isEmpty()) message = e.getClass().getSimpleName();
+    private static String readableError(Exception error) {
+        String message = error.getMessage();
+        if (message == null || message.trim().isEmpty()) message = error.getClass().getSimpleName();
         if (message.contains("Unable to resolve host")) return "无法连接接口，请检查网络或接口地址";
-        if (message.contains("timeout") || message.contains("timed out")) return "接口请求超时，请稍后重试";
+        if (message.toLowerCase(Locale.ROOT).contains("timeout")) return "接口请求超时，请稍后重试";
         return message;
     }
 
     private static String shorten(String value, int max) {
         if (value == null) return "";
         return value.length() > max ? value.substring(0, max) + "…" : value;
+    }
+
+    private static final class HttpStatusException extends Exception {
+        final int code;
+        HttpStatusException(int code, String message) {
+            super(message);
+            this.code = code;
+        }
     }
 }
